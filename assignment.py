@@ -1,13 +1,12 @@
 # ## Data loading and cleaning
 # Below are functions to load the dataset of your choice. After that, it is all up to you to create and evaluate a classification method. Beware, there may be missing values in these datasets. Good luck!
 
-
 #%% Data loading functions. Uncomment the one you want to use
 #from ecg.load_data import load_data
 from numpy import linspace
+import numpy as np
 import pandas as pd
 import os
-import matplotlib.pyplot as plt
 import numpy as np
 from sklearn.model_selection import train_test_split, cross_val_score
 from sklearn.preprocessing import StandardScaler
@@ -15,12 +14,12 @@ from sklearn.pipeline import Pipeline
 from sklearn.feature_selection import SelectKBest, f_classif
 from sklearn.svm import SVC
 from sklearn.metrics import classification_report, roc_auc_score
-
-
+import matplotlib.pyplot as plt
+#%%
 
 def load_data():
     this_directory = os.path.dirname(os.path.abspath(__file__))
-    data = pd.read_csv(os.path.join(this_directory, 'ecg', 'ecg_data', 'ecg_data.csv'), index_col=0)
+    data = pd.read_csv(os.path.join(this_directory, 'ecg_data.csv'), index_col=0)
     return data
 
 
