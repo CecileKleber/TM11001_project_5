@@ -121,3 +121,23 @@ X_test_selected = selector.transform(X_test_scaled)
 print("Aantal features na selectie:", X_train_selected.shape[1])
 
 #%%
+
+from sklearn.decomposition import PCA
+
+# Modified Pipeline using PCA instead of SelectKBest
+pca_pipeline = Pipeline([
+    ('scaler', StandardScaler()),
+    # n_components=0.95 means "keep enough components to explain 95% of the variance"
+    ('pca', PCA(n_components=0.95, svd_solver='full')), 
+    ('model', SVC(kernel='rbf', probability=True, class_weight='balanced'))
+])
+
+# Evaluate with Cross-Validation
+cv_scores = cross_val_score(pca_pipeline, X, y, cv=5, scoring='roc_auc')
+
+print(f"Mean AUC with PCA: {np.mean(cv_scores):.4f}")
+
+# To see how many features 95% variance actually results in:
+temp_pca = PCA(n_components=0.95).fit(X_train_scaled)
+print(f"9000 features compressed into: {temp_pca.n_components_} components")
+# %%
