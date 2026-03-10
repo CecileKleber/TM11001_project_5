@@ -15,6 +15,7 @@ from sklearn.feature_selection import SelectKBest, f_classif
 from sklearn.svm import SVC
 from sklearn.metrics import classification_report, roc_auc_score
 import matplotlib.pyplot as plt
+from sklearn.model_selection import GridSearchCV
 #%%
 
 def load_data():
@@ -141,3 +142,22 @@ print(f"Mean AUC with PCA: {np.mean(cv_scores):.4f}")
 temp_pca = PCA(n_components=0.95).fit(X_train_scaled)
 print(f"9000 features compressed into: {temp_pca.n_components_} components")
 # %%
+pipeline = Pipeline([
+    ('scaler', StandardScaler()),
+    ('selector', SelectKBest(score_func=f_classif)),
+    ('model', SVC(kernel='rbf', probability=True, class_weight='balanced'))
+])
+
+param_grid = {
+    'selector__k': [20, 50, 100, 200, 300, 500, 800]
+}
+
+grid_search = GridSearchCV(
+    pipeline,
+    param_grid,
+    cv=5,                 # 5-fold cross-validation
+    scoring='roc_auc',    # optimize AUC
+    n_jobs=-1             # use all CPU cores
+)
+
+grid_search.fit(X, y)
