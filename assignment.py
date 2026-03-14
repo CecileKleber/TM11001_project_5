@@ -1,71 +1,63 @@
-# ## Data loading and cleaning
-# Below are functions to load the dataset of your choice. After that, it is all up to you to create and evaluate a classification method. Beware, there may be missing values in these datasets. Good luck!
 
-#%% Data loading functions. Uncomment the one you want to use
-#from ecg.load_data import load_data
+#%% ==================================================================================
+# Basis
+# ====================================================================================
+%pip install xgboost
+#%% Data loading functions
+
 from numpy import linspace
-import numpy as np
 import pandas as pd
 import os
-import numpy as np
-from sklearn.model_selection import train_test_split, cross_val_score
-from sklearn.preprocessing import StandardScaler
-from sklearn.pipeline import Pipeline
-from sklearn.feature_selection import SelectKBest, f_classif
-from sklearn.svm import SVC
-from sklearn.metrics import classification_report, roc_auc_score
 import matplotlib.pyplot as plt
-from sklearn.model_selection import GridSearchCV
-#%%
+import numpy as np
+import xgboost as xgb
+from sklearn.model_selection import (train_test_split, StratifiedKFold, GridSearchCV, cross_val_score)
+from sklearn.preprocessing import StandardScaler, RobustScaler, MinMaxScaler
+from sklearn.pipeline import Pipeline
+from sklearn.feature_selection import SelectKBest, f_classif, SelectFromModel
+from sklearn.svm import SVC, LinearSVC
+from sklearn.metrics import (classification_report, roc_auc_score, average_precision_score,confusion_matrix, ConfusionMatrixDisplay)
+from sklearn.decomposition import PCA
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.neighbors import KNeighborsClassifier
+from sklearn.linear_model import LogisticRegression
+from sklearn.model_selection import GridSearchCV, StratifiedKFold, cross_validate
+
+#%% Loading data
 
 def load_data():
     this_directory = os.path.dirname(os.path.abspath(__file__))
+    # Removed the intermediate 'ecg_data' folder from the path
     data = pd.read_csv(os.path.join(this_directory, 'ecg_data.csv'), index_col=0)
     return data
 
-
 data = load_data()
 
-#%% checks doen aan de dataset
-
-
-# Printen van het aantal samples en het aantal kolommen, en de eerste paar rijen van de dataset
-# samples = rijen, kolommen=  features 
+#%% Kijken hoe de dataset is opgebouwd 
 
 print(f'The number of samples: {len(data.index)}')
 print(f'The number of columns: {len(data.columns)}')
 print(data.head())
 
-# Checken of er missende waarden zijn 
-# Er zijn geen missende waarden in deze dataset! 
 print("\nMissing values per column:")
 print(data.isnull().sum())
 
 print("\nTotal missing values:")
 print(data.isnull().sum().sum())
 
-#%% Kijken hoe de dataset is opgebouwd  
-
-# Kolomnamen opvragen 
-# laatste kolomnaam is 'label'
 print("\nColumn names:")
 print(data.columns)
 
-# Hoeveel ECG zijn abnormaal en hoeveel zijn normaal?
-
-# Aangezien de laatste kolom de label is kunnen we het als volgt visualiseren 
 X = data.iloc[:, :-1]
 y = data.iloc[:, -1]
 
 print("\nUnieke klassen:")
 print(y.unique())
-# Er zijn 2 klassen, namelijk 0 en 1.
-# 0 is normaal, 1 is abnormaal.
-# Er zijn 681 =0 en 146 = 1, dus bij 0 voorspellen sws hoge accuracy 
+
 print(y.value_counts())
 
-#%% train/test split, omdat je niet kan testen op training data.
-# 80% trainen, 20% testen, willen we dit anders?? 
+#%% Data opsplitsen in train en test
+
 X_train, X_test, y_train, y_test = train_test_split(
     X, y,
     test_size=0.2,
@@ -73,91 +65,439 @@ X_train, X_test, y_train, y_test = train_test_split(
     stratify=y  # Zorgt ervoor dat verdeling 0 en 1 gelijk blijft, want we hadden niet goed verdeelde data 
 )
 
-#%% Scaling, of onderstaand of wellicht SVM gebruiken?  
-scaler = StandardScaler()
-# Fit alleen op training data
-X_train_scaled = scaler.fit_transform(X_train)
-# Gebruik dezelfde schaal op test data
-X_test_scaled = scaler.transform(X_test) #geen fit transform op test want dan zou je test data lekken naar training data
+#%% ==================================================================================
+# Feature selection and k selection
+# ====================================================================================
 
-#%% Feautre selectie 
-# Dit voorkomt overfitting, en maakt het model eenvoudiger en sneller.
-# Er zitten namelijk 9000 features in en 837 patienten (zie gepinte info)
+# Dit deel is nog met cross validatie ipv nested-cross validatie. Ik heb dit niet super goed uitgewerkt ofzo. Dus niet zomaar overnemen.
 
-# Beste k vinden 
-k_waardes = range(20, 1000, 4)
+cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=42) # Cross-validation instellen
 
-k_waardes = (list(k_waardes))
+k_values = [20, 50, 100, 150, 200, 300, 500, 1000]
+k_scores = []
 
-auc_scores = []
-for k in k_waardes:
-    selector = SelectKBest(score_func=f_classif, k=k)
-    X_train_selected = selector.fit_transform(X_train_scaled, y_train)
-    X_test_selected = selector.transform(X_test_scaled)
-    
-    model = SVC(kernel='rbf', probability=True)
-    model.fit(X_train_selected, y_train)
-    
-    y_prob = model.predict_proba(X_test_selected)[:, 1]
-    auc = roc_auc_score(y_test, y_prob)
-    
- 
-    auc_scores.append(auc)
-    
+for k in k_values:
+    pipe_k = Pipeline([
+        ('scaler', RobustScaler()),
+        ('selector', SelectKBest(score_func=f_classif, k=k)),
+        ('clf', SVC(kernel='rbf', gamma='scale', C=1, probability=True, class_weight='balanced'))
+    ])
 
-# hier zoeken we naar de beste k
-max_auc = max(auc_scores)                  # Zoek het hoogste getal in de lijst
-best_index = auc_scores.index(max_auc)     # Op welke positie (index) staat dit getal?
-best_k = k_waardes[best_index]
-print(f"Beste k: {best_k} met ROC-AUC: {max_auc:.4f}")
-# Beste k = bij 126 
+    scores = cross_val_score(pipe_k, X_train, y_train, cv=cv, scoring='roc_auc', n_jobs=-1)
+    mean_score = scores.mean()
+    k_scores.append(mean_score)
+    print(f"k = {k:4d} | mean CV ROC-AUC = {mean_score:.4f}")
 
-# SelecKbest 
-k = best_k # dit getal kunnen we aanpassen ahv wat bij de data past, wordt nu dus aangepast ahv de for loop
-selector = SelectKBest(score_func=f_classif, k=k)
-# Fit alleen op training
-X_train_selected = selector.fit_transform(X_train_scaled, y_train)
-# Pas toe op test
-X_test_selected = selector.transform(X_test_scaled)
-print("Aantal features na selectie:", X_train_selected.shape[1])
+best_k = k_values[int(np.argmax(k_scores))]
+print(f"\nBeste k op basis van CV ROC-AUC: {best_k}")
 
-#%%
+# Plot k-analyse
+plt.figure(figsize=(8, 5))
+plt.plot(k_values, k_scores, marker='o')
+plt.xlabel("Aantal geselecteerde features (k)")
+plt.ylabel("Mean CV ROC-AUC")
+plt.title("Hyperparameter analyse: SelectKBest k")
+plt.grid(True)
+plt.tight_layout()
+plt.show()
 
-from sklearn.decomposition import PCA
+#%% ==================================================================================
+# SVM RBF
+# ====================================================================================
 
-# Modified Pipeline using PCA instead of SelectKBest
-pca_pipeline = Pipeline([
-    ('scaler', StandardScaler()),
-    # n_components=0.95 means "keep enough components to explain 95% of the variance"
-    ('pca', PCA(n_components=0.95, svd_solver='full')), 
-    ('model', SVC(kernel='rbf', probability=True, class_weight='balanced'))
+# Pipeline maken
+fixed_scaler = RobustScaler() 
+fixed_k = best_k    # Hiervoor gevonden
+
+svm_rbf_pipe = Pipeline([
+    ('scaler', fixed_scaler),
+    ('selector', SelectKBest(score_func=f_classif, k=fixed_k)),
+    ('clf', SVC(kernel='rbf', probability=True))
 ])
 
-# Evaluate with Cross-Validation
-cv_scores = cross_val_score(pca_pipeline, X, y, cv=5, scoring='roc_auc')
-
-print(f"Mean AUC with PCA: {np.mean(cv_scores):.4f}")
-
-# To see how many features 95% variance actually results in:
-temp_pca = PCA(n_components=0.95).fit(X_train_scaled)
-print(f"9000 features compressed into: {temp_pca.n_components_} components")
-# %%
-pipeline = Pipeline([
-    ('scaler', StandardScaler()),
-    ('selector', SelectKBest(score_func=f_classif)),
-    ('model', SVC(kernel='rbf', probability=True, class_weight='balanced'))
-])
-
-param_grid = {
-    'selector__k': [20, 50, 100, 200, 300, 500, 800]
+# Hyperparameter grid
+svm_rbf_param_grid = {
+    'clf__C': [1e-2, 1e-1, 1, 10, 100],
+    'clf__gamma': [1e-4, 1e-3, 1e-2, 1e-1, 1]
 }
 
-grid_search = GridSearchCV(
-    pipeline,
-    param_grid,
-    cv=5,                 # 5-fold cross-validation
-    scoring='roc_auc',    # optimize AUC
-    n_jobs=-1             # use all CPU cores
+# Inner en outer CV definiëren
+inner_cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
+outer_cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
+
+# Inner grid search
+svm_rbf_grid = GridSearchCV(
+    estimator=svm_rbf_pipe,
+    param_grid=svm_rbf_param_grid,
+    scoring='roc_auc',
+    cv=inner_cv,
+    n_jobs=-1,
+    verbose=1
 )
 
-grid_search.fit(X, y)
+# Nested CV uitvoeren
+svm_rbf_nested_scores = cross_validate(
+    estimator=svm_rbf_grid,
+    X=X_train,
+    y=y_train,
+    cv=outer_cv,
+    scoring='roc_auc',
+    n_jobs=-1,
+    return_train_score=False,
+    return_estimator=True
+)
+
+# svm_rbf_grid.fit(X_train, y_train)
+
+# print(f"\nBest params for SVM-RBF:")
+# print(svm_rbf_grid.best_params_)
+# print(f"Best CV ROC-AUC: {svm_rbf_grid.best_score_:.4f}")
+
+# Resultaten
+print("Outer fold ROC-AUC scores:")
+print(svm_rbf_nested_scores['test_score'])
+
+print(f"\nGemiddelde nested ROC-AUC: {svm_rbf_nested_scores['test_score'].mean():.4f}")
+print(f"Standaarddeviatie nested ROC-AUC: {svm_rbf_nested_scores['test_score'].std():.4f}")
+
+print("\nBeste parameters per outer fold:")
+for i, est in enumerate(svm_rbf_nested_scores['estimator'], 1):
+    print(f"Fold {i}: {est.best_params_}")
+
+#%% ==================================================================================
+# Final model SVM RBF 
+# ====================================================================================
+
+# Final search op volledige trainingsset
+svm_rbf_grid.fit(X_train, y_train)
+
+# Beste parameters
+print("\nFinal best params for SVM-RBF:")
+print(svm_rbf_grid.best_params_)
+
+# Beste CV-score op de volledige trainingsset
+print(f"Final CV ROC-AUC on full training set: {svm_rbf_grid.best_score_:.4f}")
+
+# Definitieve model
+final_svm_rbf_model = svm_rbf_grid.best_estimator_
+
+
+#%% ==================================================================================
+# SVM Poly
+# ====================================================================================
+
+# Pipeline maken
+fixed_scaler = RobustScaler()
+fixed_k = best_k
+
+svm_poly_pipe = Pipeline([
+    ('scaler', fixed_scaler),
+    ('selector', SelectKBest(score_func=f_classif, k=fixed_k)),
+    ('clf', SVC(kernel='poly', probability=True))
+])
+
+# Hyperparameter grid
+svm_poly_param_grid = {
+    'clf__C': [1e-2, 1e-1, 1, 10, 100],
+    'clf__gamma': [1e-4, 1e-3, 1e-2, 1e-1, 1],
+    'clf__degree': [2, 3, 4],
+    'clf__coef0': [0, 0.5, 1]
+}
+
+# Inner en outer CV
+inner_cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
+outer_cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
+
+# Grid search
+svm_poly_grid = GridSearchCV(
+    estimator=svm_poly_pipe,
+    param_grid=svm_poly_param_grid,
+    scoring='roc_auc',
+    cv=inner_cv,
+    n_jobs=-1,
+    verbose=1
+)
+
+# svm_poly_grid.fit(X_train, y_train)
+
+# print(f"\nBest params for SVM-RBF:")
+# print(svm_poly_grid.best_params_)
+# print(f"Best CV ROC-AUC: {svm_poly_grid.best_score_:.4f}")
+
+# Nested cross-validation
+svm_poly_nested_scores = cross_validate(
+    estimator=svm_poly_grid,
+    X=X_train,
+    y=y_train,
+    cv=outer_cv,
+    scoring='roc_auc',
+    n_jobs=-1,
+    return_estimator=True,
+    return_train_score=False
+)
+
+# Resultaten
+print("Outer fold ROC-AUC scores:")
+print(svm_poly_nested_scores['test_score'])
+
+print(f"\nMean nested ROC-AUC: {np.mean(svm_poly_nested_scores['test_score']):.4f}")
+print(f"Std nested ROC-AUC: {np.std(svm_poly_nested_scores['test_score']):.4f}")
+
+print("\nBest params per outer fold:")
+for i, est in enumerate(svm_poly_nested_scores['estimator'], 1):
+    print(f"Fold {i}: {est.best_params_}")
+
+#%% ==================================================================================
+# Final model SVM Poly
+# ====================================================================================
+
+# Final search op volledige trainingsset
+svm_poly_grid.fit(X_train, y_train)
+
+# Beste parameters
+print("\nFinal best params for SVM-Poly:")
+print(svm_poly_grid.best_params_)
+
+# Beste CV-score op de volledige trainingsset
+print(f"Final CV ROC-AUC on full training set: {svm_poly_grid.best_score_:.4f}")
+
+# Definitieve model
+final_svm_poly_model = svm_poly_grid.best_estimator_
+
+#%% ==================================================================================
+# K Nearest Neighbours (KNN)
+# ====================================================================================
+
+# Pipeline maken
+fixed_scaler = RobustScaler()
+fixed_k = best_k
+
+knn_pipe = Pipeline([
+    ('scaler', fixed_scaler),
+    ('selector', SelectKBest(score_func=f_classif, k=fixed_k)),
+    ('clf', KNeighborsClassifier())
+])
+
+# Hyperparameter grid
+knn_param_grid = {
+    'clf__n_neighbors': [3,5,7,9,11,13,15,17,19],
+    'clf__weights': ['uniform','distance'],
+    'clf__p': [1,2],
+    'clf__algorithm': ['auto','ball_tree','kd_tree'],
+    'clf__leaf_size': [20,30,40]
+}
+
+# Inner en outer CV
+inner_cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
+outer_cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
+
+# Grid search
+knn_grid = GridSearchCV(
+    estimator=knn_pipe,
+    param_grid=knn_param_grid,
+    scoring='roc_auc',
+    cv=inner_cv,
+    n_jobs=-1,
+    verbose=1
+)
+
+# Nested cross-validation
+knn_nested_scores = cross_validate(
+    estimator=knn_grid,
+    X=X_train,
+    y=y_train,
+    cv=outer_cv,
+    scoring='roc_auc',
+    n_jobs=-1,
+    return_estimator=True,
+    return_train_score=False
+)
+
+# Resultaten
+print("Outer fold ROC-AUC scores:")
+print(knn_nested_scores['test_score'])
+
+print(f"\nMean nested ROC-AUC: {np.mean(knn_nested_scores['test_score']):.4f}")
+print(f"Std nested ROC-AUC: {np.std(knn_nested_scores['test_score']):.4f}")
+
+print("\nBest params per outer fold:")
+for i, est in enumerate(knn_nested_scores['estimator'], 1):
+    print(f"Fold {i}: {est.best_params_}")
+
+#%% ==================================================================================
+# Final model KNN
+# ====================================================================================
+
+# Final search op volledige trainingsset
+knn_grid.fit(X_train, y_train)
+
+# Beste parameters
+print("\nFinal best params for KNN:")
+print(knn_grid.best_params_)
+
+# Beste CV-score op de volledige trainingsset
+print(f"Final CV ROC-AUC on full training set: {knn_grid.best_score_:.4f}")
+
+# Definitieve model
+final_knn_model = knn_grid.best_estimator_
+
+#%% ==================================================================================
+# Random Forest
+# ====================================================================================
+
+# Pipeline maken
+fixed_k = best_k
+
+rf_pipe = Pipeline([
+    ('selector', SelectKBest(score_func=f_classif, k=fixed_k)),
+    ('clf', RandomForestClassifier(random_state=42))
+])
+# Bij Random Forest hoef je in principe niet te schalen, omdat bomen niet afstandsgebaseerd zijn.
+
+# Hyperparameter grid
+rf_param_grid = {
+    'clf__n_estimators': [100, 200, 500],
+    'clf__max_depth': [None, 5, 10, 20, 30],
+    'clf__max_features': ['sqrt', 'log2', None],
+    'clf__min_samples_split': [2, 5, 10],
+    'clf__min_samples_leaf': [1, 2, 4]
+}
+
+# Inner en outer CV
+inner_cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
+outer_cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
+
+# Grid search
+rf_grid = GridSearchCV(
+    estimator=rf_pipe,
+    param_grid=rf_param_grid,
+    scoring='roc_auc',
+    cv=inner_cv,
+    n_jobs=-1,
+    verbose=1
+)
+
+# Nested cross-validation
+rf_nested_scores = cross_validate(
+    estimator=rf_grid,
+    X=X_train,
+    y=y_train,
+    cv=outer_cv,
+    scoring='roc_auc',
+    n_jobs=-1,
+    return_estimator=True,
+    return_train_score=False
+)
+
+# Resultaten
+print("Outer fold ROC-AUC scores:")
+print(rf_nested_scores['test_score'])
+
+print(f"\nMean nested ROC-AUC: {np.mean(rf_nested_scores['test_score']):.4f}")
+print(f"Std nested ROC-AUC: {np.std(rf_nested_scores['test_score']):.4f}")
+
+print("\nBest params per outer fold:")
+for i, est in enumerate(rf_nested_scores['estimator'], 1):
+    print(f"Fold {i}: {est.best_params_}")
+
+#%% ==================================================================================
+# Final model Random Forest
+# ====================================================================================
+
+# Final search op volledige trainingsset
+rf_grid.fit(X_train, y_train)
+
+# Beste parameters
+print("\nFinal best params for Random Forest:")
+print(rf_grid.best_params_)
+
+# Beste CV-score op de volledige trainingsset
+print(f"Final CV ROC-AUC on full training set: {rf_grid.best_score_:.4f}")
+
+# Definitieve model
+final_rf_model = rf_grid.best_estimator_
+
+
+# %% ===================================================================================
+# XGBoost classifier 
+# ======================================================================================
+# 1. Calculate the clinical imbalance ratio dynamically for the training fold
+# This ensures we penalize missed 'Abnormal' (1) cases heavily
+imbalance_ratio = len(y_train[y_train == 0]) / len(y_train[y_train == 1])
+
+# 2. Pipeline creation
+fixed_k = best_k
+
+xgb_pipe = Pipeline([
+    ('selector', SelectKBest(score_func=f_classif, k=fixed_k)),
+    ('clf', xgb.XGBClassifier(
+        objective='binary:logistic', 
+        eval_metric='auc',
+        scale_pos_weight=imbalance_ratio, # Crucial for your 681 vs 146 split
+        random_state=42
+    ))
+])
+
+# 3. Hyperparameter grid for the Inner CV
+# learning_rate prevents the sequential trees from over-correcting too aggressively
+xgb_param_grid = {
+    'clf__n_estimators': [100, 200, 300],
+    'clf__max_depth': [3, 5, 7],
+    'clf__learning_rate': [0.01, 0.05, 0.1],
+    'clf__subsample': [0.8, 1.0],         # Uses a fraction of patients per tree to prevent overfitting
+    'clf__colsample_bytree': [0.8, 1.0]   # Uses a fraction of features per tree
+}
+
+# Inner en outer CV
+inner_cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
+outer_cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
+
+# Grid search (The Lab)
+xgb_grid = GridSearchCV(
+    estimator=xgb_pipe,
+    param_grid=xgb_param_grid,
+    scoring='roc_auc',
+    cv=inner_cv,
+    n_jobs=-1,
+    verbose=1
+)
+
+# Nested cross-validation (The Clinical Trial)
+xgb_nested_scores = cross_validate(
+    estimator=xgb_grid,
+    X=X_train,
+    y=y_train,
+    cv=outer_cv,
+    scoring='roc_auc',
+    n_jobs=-1,
+    return_estimator=True,
+    return_train_score=False
+)
+
+# Resultaten
+print("Outer fold ROC-AUC scores (XGBoost):")
+print(xgb_nested_scores['test_score'])
+
+print(f"\nMean nested ROC-AUC: {np.mean(xgb_nested_scores['test_score']):.4f}")
+print(f"Std nested ROC-AUC: {np.std(xgb_nested_scores['test_score']):.4f}")
+
+print("\nBest params per outer fold:")
+for i, est in enumerate(xgb_nested_scores['estimator'], 1):
+    print(f"Fold {i}: {est.best_params_}")
+
+#%% ==================================================================================
+# Final model XGBoost
+# ====================================================================================
+
+# Final search op volledige trainingsset
+xgb_grid.fit(X_train, y_train)
+
+# Beste parameters
+print("\nFinal best params for XGBoost:")
+print(xgb_grid.best_params_)
+
+# Beste CV-score op de volledige trainingsset
+print(f"Final CV ROC-AUC on full training set: {xgb_grid.best_score_:.4f}")
+
+# Definitieve model
+final_xgb_model = xgb_grid.best_estimator_
