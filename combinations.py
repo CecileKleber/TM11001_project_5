@@ -1,5 +1,4 @@
-#%%
-# =============================================================================
+#%% =============================================================================
 # ECG Classification Pipeline
 # Feature selection: PCA | LASSO (SelectFromModel)
 # Classifiers:       SVM-RBF | KNN | Random Forest | XGBoost
@@ -29,6 +28,14 @@ from sklearn.metrics import (
     classification_report, roc_auc_score, confusion_matrix, ConfusionMatrixDisplay
 )
 from matplotlib.patches import Patch
+
+#%% =============================================================================
+# DEBUG MODE
+# Set DEBUG = True for a quick smoke-test (1 combination, tiny grids, 3 folds)
+# Set DEBUG = False for the full run
+# =============================================================================
+
+DEBUG = True   # <--- flip to False for the real run
 
 #%%
 # 1. Load data
@@ -66,8 +73,11 @@ print(f"Train size: {len(X_train)} | Test size: {len(X_test)}")
 # 3. Cross-validation settings
 # =============================================================================
 
-inner_cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
-outer_cv  = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
+n_folds = 3 if DEBUG else 5
+inner_cv = StratifiedKFold(n_splits=n_folds, shuffle=True, random_state=42)
+outer_cv  = StratifiedKFold(n_splits=n_folds, shuffle=True, random_state=42)
+
+print(f"DEBUG mode: {DEBUG}  |  CV folds: {n_folds}")
 
 #%%
 # 4. Define feature selectors
@@ -99,27 +109,27 @@ classifiers = {
     'SVM-RBF': {
         'clf': SVC(kernel='rbf', probability=True, class_weight='balanced'),
         'params': {
-            'clf__C':     [1e-2, 1e-1, 1, 10, 100],
-            'clf__gamma': [1e-4, 1e-3, 1e-2, 1e-1, 1]
+            'clf__C':     [0.1, 1] if DEBUG else [1e-2, 1e-1, 1, 10, 100],
+            'clf__gamma': [1e-3, 1e-2] if DEBUG else [1e-4, 1e-3, 1e-2, 1e-1, 1]
         }
     },
 
     'KNN': {
         'clf': KNeighborsClassifier(),
         'params': {
-            'clf__n_neighbors': [3, 5, 7, 11, 15, 19],
+            'clf__n_neighbors': [3, 5] if DEBUG else [3, 5, 7, 11, 15, 19],
             'clf__weights':     ['uniform', 'distance'],
-            'clf__p':           [1, 2]
+            'clf__p':           [2]    if DEBUG else [1, 2]
         }
     },
 
     'RandomForest': {
         'clf': RandomForestClassifier(random_state=42, class_weight='balanced'),
         'params': {
-            'clf__n_estimators':    [100, 200, 500],
-            'clf__max_depth':       [None, 10, 20],
-            'clf__max_features':    ['sqrt', 'log2'],
-            'clf__min_samples_leaf':[1, 2, 4]
+            'clf__n_estimators':     [50]          if DEBUG else [100, 200, 500],
+            'clf__max_depth':        [5]            if DEBUG else [None, 10, 20],
+            'clf__max_features':     ['sqrt']       if DEBUG else ['sqrt', 'log2'],
+            'clf__min_samples_leaf': [1]            if DEBUG else [1, 2, 4]
         }
     },
 
@@ -131,11 +141,11 @@ classifiers = {
             random_state=42
         ),
         'params': {
-            'clf__n_estimators':    [100, 200, 300],
-            'clf__max_depth':       [3, 5, 7],
-            'clf__learning_rate':   [0.01, 0.05, 0.1],
-            'clf__subsample':       [0.8, 1.0],
-            'clf__colsample_bytree':[0.8, 1.0]
+            'clf__n_estimators':     [50]        if DEBUG else [100, 200, 300],
+            'clf__max_depth':        [3]         if DEBUG else [3, 5, 7],
+            'clf__learning_rate':    [0.1]       if DEBUG else [0.01, 0.05, 0.1],
+            'clf__subsample':        [0.8]       if DEBUG else [0.8, 1.0],
+            'clf__colsample_bytree': [0.8]       if DEBUG else [0.8, 1.0]
         }
     }
 }
@@ -172,7 +182,7 @@ feature_selectors = {
         ],
         # Tune the regularisation strength C of the inner logistic regression
         'extra_params': {
-            'selector__estimator__C': [0.01, 0.1, 1.0, 10.0]
+            'selector__estimator__C': [0.1, 1.0] if DEBUG else [0.01, 0.1, 1.0, 10.0]
         }
     }
 }
@@ -181,6 +191,17 @@ feature_selectors = {
 # 7. Main loop — nested CV for every (selector × classifier) combination
 # =============================================================================
 
+# In DEBUG mode: doe hier je classifier en feature selection die je wil en dan kan je of per combinatie runnen of meerdere combinaties tegelijkertijd runnen maar kost veel tijd. 
+# the pipeline works end-to-end before committing to the full run.
+if DEBUG:
+    active_selectors    = {k: feature_selectors[k] for k in ['LASSO']}
+    active_classifiers  = {k: classifiers[k]        for k in ['KNN']}
+    print("DEBUG: running 1 combination only (PCA + KNN)")
+else:
+    active_selectors   = feature_selectors
+    active_classifiers = classifiers
+    print("FULL RUN: running all 8 combinations")
+
 results = {}   # stores nested CV scores
 grids   = {}   # stores fitted GridSearchCV objects for the final models
 
@@ -188,8 +209,8 @@ print("\n" + "=" * 65)
 print("  Running nested cross-validation for all combinations …")
 print("=" * 65)
 
-for sel_name, sel_info in feature_selectors.items():
-    for clf_name, clf_info in classifiers.items():
+for sel_name, sel_info in active_selectors.items():
+    for clf_name, clf_info in active_classifiers.items():
 
         combo = f"{sel_name} + {clf_name}"
         print(f"\n--- {combo} ---")
@@ -239,7 +260,6 @@ for sel_name, sel_info in feature_selectors.items():
         grids[combo] = grid_search
 
 #%%
-# =============================================================================
 # 8. Summary table
 # =============================================================================
 
@@ -255,7 +275,6 @@ summary = pd.DataFrame({
 print(summary.to_string(float_format='{:.4f}'.format))
 
 #%%
-# =============================================================================
 # 9. Bar chart — compare all combinations
 # =============================================================================
 
@@ -289,7 +308,6 @@ plt.savefig(os.path.join(os.path.dirname(os.path.abspath(__file__)), 'comparison
 plt.show()
 
 #%%
-# =============================================================================
 # 10. Final model — train best combination on full training set, evaluate on test
 # =============================================================================
 
@@ -326,3 +344,4 @@ plt.tight_layout()
 plt.savefig(os.path.join(os.path.dirname(os.path.abspath(__file__)), 'confusion_matrix.png'),
             dpi=150)
 plt.show()
+# %%
