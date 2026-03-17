@@ -1,8 +1,11 @@
+#%%
 # =============================================================================
 # ECG Classification Pipeline
 # Feature selection: PCA | LASSO (SelectFromModel)
 # Classifiers:       SVM-RBF | KNN | Random Forest | XGBoost
 # Evaluation:        Nested cross-validation (ROC-AUC)
+#
+# Run this file top-to-bottom (F5), or run each cell in order.
 # =============================================================================
 
 import os
@@ -25,8 +28,9 @@ from sklearn.ensemble import RandomForestClassifier
 from sklearn.metrics import (
     classification_report, roc_auc_score, confusion_matrix, ConfusionMatrixDisplay
 )
+from matplotlib.patches import Patch
 
-# =============================================================================
+#%%
 # 1. Load data
 # =============================================================================
 
@@ -45,7 +49,7 @@ print(f"\nClass distribution:\n{data.iloc[:, -1].value_counts()}")
 X = data.iloc[:, :-1]
 y = data.iloc[:, -1]
 
-# =============================================================================
+#%%
 # 2. Train/test split (held-out test set — only touched at the very end)
 # =============================================================================
 
@@ -56,16 +60,16 @@ X_train, X_test, y_train, y_test = train_test_split(
     stratify=y
 )
 
-print(f"\nTrain size: {len(X_train)} | Test size: {len(X_test)}")
+print(f"Train size: {len(X_train)} | Test size: {len(X_test)}")
 
-# =============================================================================
+#%%
 # 3. Cross-validation settings
 # =============================================================================
 
 inner_cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
 outer_cv  = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
 
-# =============================================================================
+#%%
 # 4. Define feature selectors
 # =============================================================================
 
@@ -83,7 +87,7 @@ lasso_selector = SelectFromModel(
     )
 )
 
-# =============================================================================
+#%%
 # 5. Define classifiers & their hyperparameter grids
 # =============================================================================
 
@@ -136,7 +140,7 @@ classifiers = {
     }
 }
 
-# =============================================================================
+#%%
 # 6. Feature selectors — two options
 #    Note: Random Forest is tree-based (no distance) so scaling is skipped
 #          for the RF steps; all other classifiers include RobustScaler.
@@ -173,7 +177,7 @@ feature_selectors = {
     }
 }
 
-# =============================================================================
+#%%
 # 7. Main loop — nested CV for every (selector × classifier) combination
 # =============================================================================
 
@@ -234,6 +238,7 @@ for sel_name, sel_info in feature_selectors.items():
         # Store the grid for later final-model fitting
         grids[combo] = grid_search
 
+#%%
 # =============================================================================
 # 8. Summary table
 # =============================================================================
@@ -249,6 +254,7 @@ summary = pd.DataFrame({
 
 print(summary.to_string(float_format='{:.4f}'.format))
 
+#%%
 # =============================================================================
 # 9. Bar chart — compare all combinations
 # =============================================================================
@@ -273,7 +279,6 @@ for bar, mean, std in zip(bars, means, stds):
             f'{mean:.3f}', va='center', fontsize=9)
 
 # Colour legend
-from matplotlib.patches import Patch
 legend_patches = [Patch(color='#2196F3', label='PCA'),
                   Patch(color='#FF7043', label='LASSO')]
 ax.legend(handles=legend_patches, loc='lower right')
@@ -283,6 +288,7 @@ plt.savefig(os.path.join(os.path.dirname(os.path.abspath(__file__)), 'comparison
             dpi=150)
 plt.show()
 
+#%%
 # =============================================================================
 # 10. Final model — train best combination on full training set, evaluate on test
 # =============================================================================
