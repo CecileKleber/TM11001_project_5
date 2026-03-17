@@ -35,7 +35,7 @@ from matplotlib.patches import Patch
 # Set DEBUG = False for the full run
 # =============================================================================
 
-DEBUG = True   # <--- flip to False for the real run
+DEBUG = False # <--- flip to False for the real run
 
 #%%
 # 1. Load data
@@ -194,13 +194,13 @@ feature_selectors = {
 # In DEBUG mode: doe hier je classifier en feature selection die je wil en dan kan je of per combinatie runnen of meerdere combinaties tegelijkertijd runnen maar kost veel tijd. 
 # the pipeline works end-to-end before committing to the full run.
 if DEBUG:
-    active_selectors    = {k: feature_selectors[k] for k in ['LASSO']}
-    active_classifiers  = {k: classifiers[k]        for k in ['KNN']}
-    print("DEBUG: running 1 combination only (PCA + KNN)")
+    active_selectors    = {k: feature_selectors[k] for k in ['PCA']}
+    active_classifiers  = {k: classifiers[k]        for k in ['SVM-RBF']}
+    print("DEBUG: running 1 combination only (PCA + SVM-RBF)")
 else:
-    active_selectors   = feature_selectors
-    active_classifiers = classifiers
-    print("FULL RUN: running all 8 combinations")
+    active_selectors   = {k: feature_selectors[k] for k in ['LASSO']}   # just one
+    active_classifiers = {k: classifiers[k]        for k in ['SVM-RBF']} # just one
+    print("Running: LASSO + SVM-RBF with full grid")
 
 results = {}   # stores nested CV scores
 grids   = {}   # stores fitted GridSearchCV objects for the final models
