@@ -1,0 +1,8 @@
+# Ignore data files
+ecg_data.csv
+ecg_data.zip
+
+# macOS file
+.DS_Store
+
+
