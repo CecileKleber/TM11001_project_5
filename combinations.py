@@ -195,12 +195,12 @@ feature_selectors = {
 # the pipeline works end-to-end before committing to the full run.
 if DEBUG:
     active_selectors    = {k: feature_selectors[k] for k in ['PCA']}
-    active_classifiers  = {k: classifiers[k]        for k in ['SVM-RBF']}
-    print("DEBUG: running 1 combination only (PCA + SVM-RBF)")
+    active_classifiers  = {k: classifiers[k]        for k in ['KNN']}
+    print("DEBUG: running 1 combination only (PCA + KNN)")
 else:
-    active_selectors   = {k: feature_selectors[k] for k in ['LASSO']}   # just one
-    active_classifiers = {k: classifiers[k]        for k in ['SVM-RBF']} # just one
-    print("Running: LASSO + SVM-RBF with full grid")
+    active_selectors   = {k: feature_selectors[k] for k in ['PCA','LASSO']}   # just one
+    active_classifiers = {k: classifiers[k]        for k in ['RandomForest']} # just one
+    print("Running: LASSO + KNN with full grid")
 
 results = {}   # stores nested CV scores
 grids   = {}   # stores fitted GridSearchCV objects for the final models
@@ -258,6 +258,8 @@ for sel_name, sel_info in active_selectors.items():
 
         # Store the grid for later final-model fitting
         grids[combo] = grid_search
+
+# %%
 
 #%%
 # 8. Summary table
