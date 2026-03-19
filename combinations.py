@@ -1,4 +1,4 @@
-#%% =============================================================================
+#%%
 # ECG Classification Pipeline
 # Feature selection: PCA | LASSO (SelectFromModel)
 # Classifiers:       SVM-RBF | KNN | Random Forest | XGBoost
@@ -19,7 +19,8 @@ from sklearn.model_selection import (
 from sklearn.preprocessing import RobustScaler
 from sklearn.pipeline import Pipeline
 from sklearn.decomposition import PCA
-from sklearn.feature_selection import SelectFromModel
+from sklearn.feature_selection import SelectFromModel, SelectKBest, f_classif
+from sklearn.model_selection import cross_val_score
 from sklearn.linear_model import LogisticRegression
 from sklearn.svm import SVC
 from sklearn.neighbors import KNeighborsClassifier
@@ -29,13 +30,13 @@ from sklearn.metrics import (
 )
 from matplotlib.patches import Patch
 
-#%% =============================================================================
+#%%
 # DEBUG MODE
 # Set DEBUG = True for a quick smoke-test (1 combination, tiny grids, 3 folds)
 # Set DEBUG = False for the full run
 # =============================================================================
 
-DEBUG = False # <--- flip to False for the real run
+DEBUG = False   # <--- flip to False for the real run
 
 #%%
 # 1. Load data
@@ -80,7 +81,44 @@ outer_cv  = StratifiedKFold(n_splits=n_folds, shuffle=True, random_state=42)
 print(f"DEBUG mode: {DEBUG}  |  CV folds: {n_folds}")
 
 #%%
-# 4. Define feature selectors
+# 4. SelectKBest k-analysis
+#    This uses a fixed SVM to find which k gives the best AUC.
+#    It's a reference/comparison — the main pipeline uses PCA and LASSO instead.
+#    Note: this uses simple CV (not nested), so the AUC will look a bit higher
+#    than the nested CV results below. That's expected and not a bug.
+# =============================================================================
+
+k_values = [20, 50, 100, 150, 200, 300, 500, 1000]  # always full, this runs fast
+k_scores = []
+
+print("Running SelectKBest k-analysis …")
+for k in k_values:
+    pipe_k = Pipeline([
+        ('scaler',   RobustScaler()),
+        ('selector', SelectKBest(score_func=f_classif, k=k)),
+        ('clf',      SVC(kernel='rbf', gamma='scale', C=1,
+                         probability=True, class_weight='balanced'))
+    ])
+    scores = cross_val_score(pipe_k, X_train, y_train,
+                             cv=inner_cv, scoring='roc_auc', n_jobs=-1)
+    k_scores.append(scores.mean())
+    print(f"  k = {k:4d} | mean CV ROC-AUC = {scores.mean():.4f}")
+
+best_k = k_values[int(np.argmax(k_scores))]
+print(f"\nBest k: {best_k}  (AUC = {max(k_scores):.4f})")
+
+# Plot
+plt.figure(figsize=(8, 4))
+plt.plot(k_values, k_scores, marker='o', color='#2196F3')
+plt.xlabel("Number of selected features (k)")
+plt.ylabel("Mean CV ROC-AUC")
+plt.title("SelectKBest k-analysis (reference — simple CV, not nested)")
+plt.grid(True)
+plt.tight_layout()
+plt.show()
+
+#%%
+# 5. Define feature selectors
 # =============================================================================
 
 # --- PCA: keep components explaining 95% of variance ---
@@ -98,7 +136,7 @@ lasso_selector = SelectFromModel(
 )
 
 #%%
-# 5. Define classifiers & their hyperparameter grids
+# 6. Define classifiers & their hyperparameter grids
 # =============================================================================
 
 # Class imbalance ratio for XGBoost
@@ -111,6 +149,16 @@ classifiers = {
         'params': {
             'clf__C':     [0.1, 1] if DEBUG else [1e-2, 1e-1, 1, 10, 100],
             'clf__gamma': [1e-3, 1e-2] if DEBUG else [1e-4, 1e-3, 1e-2, 1e-1, 1]
+        }
+    },
+
+    'SVM-Poly': {
+        'clf': SVC(kernel='poly', probability=True, class_weight='balanced'),
+        'params': {
+            'clf__C':      [0.1, 1]    if DEBUG else [1e-2, 1e-1, 1, 10, 100],
+            'clf__gamma':  [1e-3, 1e-2] if DEBUG else [1e-4, 1e-3, 1e-2, 1e-1, 1],
+            'clf__degree': [2, 3]      if DEBUG else [2, 3, 4],
+            'clf__coef0':  [0, 1]      if DEBUG else [0, 0.5, 1]
         }
     },
 
@@ -151,7 +199,7 @@ classifiers = {
 }
 
 #%%
-# 6. Feature selectors — two options
+# 7. Feature selectors — two options
 #    Note: Random Forest is tree-based (no distance) so scaling is skipped
 #          for the RF steps; all other classifiers include RobustScaler.
 # =============================================================================
@@ -163,7 +211,6 @@ feature_selectors = {
             ('scaler',   RobustScaler()),
             ('selector', PCA(n_components=0.95, svd_solver='full'))
         ],
-        # No extra selector params to search over (n_components fixed to 0.95)
         'extra_params': {}
     },
 
@@ -180,27 +227,34 @@ feature_selectors = {
                 )
             ))
         ],
-        # Tune the regularisation strength C of the inner logistic regression
         'extra_params': {
             'selector__estimator__C': [0.1, 1.0] if DEBUG else [0.01, 0.1, 1.0, 10.0]
         }
+    },
+
+    'SelectKBest': {
+        'steps': [
+            ('scaler',   RobustScaler()),
+            ('selector', SelectKBest(score_func=f_classif, k=best_k))  # best_k from section 4
+        ],
+        'extra_params': {}  # k is already fixed to best_k found above
     }
 }
 
 #%%
-# 7. Main loop — nested CV for every (selector × classifier) combination
+# 8. Main loop — nested CV for every (selector × classifier) combination
 # =============================================================================
 
-# In DEBUG mode: doe hier je classifier en feature selection die je wil en dan kan je of per combinatie runnen of meerdere combinaties tegelijkertijd runnen maar kost veel tijd. 
+# In DEBUG mode: only run the fastest combination (PCA + SVM-RBF) to verify
 # the pipeline works end-to-end before committing to the full run.
 if DEBUG:
     active_selectors    = {k: feature_selectors[k] for k in ['PCA']}
-    active_classifiers  = {k: classifiers[k]        for k in ['KNN']}
-    print("DEBUG: running 1 combination only (PCA + KNN)")
+    active_classifiers  = {k: classifiers[k]        for k in ['SVM-RBF']}
+    print("DEBUG: running 1 combination only (PCA + SVM-RBF)")
 else:
-    active_selectors   = {k: feature_selectors[k] for k in ['PCA','LASSO']}   # just one
-    active_classifiers = {k: classifiers[k]        for k in ['RandomForest']} # just one
-    print("Running: LASSO + KNN with full grid")
+    active_selectors   = {k: feature_selectors[k] for k in [ 'SelectKBest']}
+    active_classifiers = {k: classifiers[k]        for k in ['SVM-RBF']}
+    print("SelectKbest + SVM-RBF)")
 
 results = {}   # stores nested CV scores
 grids   = {}   # stores fitted GridSearchCV objects for the final models
@@ -256,13 +310,17 @@ for sel_name, sel_info in active_selectors.items():
         print(f"  Fold scores : {np.round(nested_scores['test_score'], 4)}")
         print(f"  Mean AUC    : {mean_auc:.4f}  ±  {std_auc:.4f}")
 
+        # Best params per outer fold (like your old code)
+        print(f"  Best params per outer fold:")
+        for i, est in enumerate(nested_scores['estimator'], 1):
+            print(f"    Fold {i}: {est.best_params_}")
+
         # Store the grid for later final-model fitting
         grids[combo] = grid_search
 
-# %%
-
 #%%
-# 8. Summary table
+
+# 9. Summary table
 # =============================================================================
 
 print("\n" + "=" * 65)
@@ -277,7 +335,8 @@ summary = pd.DataFrame({
 print(summary.to_string(float_format='{:.4f}'.format))
 
 #%%
-# 9. Bar chart — compare all combinations
+# =============================================================================
+# 10. Bar chart — compare all combinations
 # =============================================================================
 
 combos    = list(summary.index)
@@ -310,7 +369,7 @@ plt.savefig(os.path.join(os.path.dirname(os.path.abspath(__file__)), 'comparison
 plt.show()
 
 #%%
-# 10. Final model — train best combination on full training set, evaluate on test
+# 11. Final model — train best combination on full training set, evaluate on test
 # =============================================================================
 
 best_combo = summary.index[0]
