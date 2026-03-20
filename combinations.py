@@ -252,9 +252,9 @@ if DEBUG:
     active_classifiers  = {k: classifiers[k]        for k in ['SVM-RBF']}
     print("DEBUG: running 1 combination only (PCA + SVM-RBF)")
 else:
-    active_selectors   = feature_selectors
-    active_classifiers = classifiers
-    print("FULL RUN: running all 8 combinations")
+    active_selectors   = {k: feature_selectors[k] for k in [ 'SelectKBest']}
+    active_classifiers = {k: classifiers[k]        for k in ['SVM-RBF']}
+    print("SelectKbest + SVM-RBF)")
 
 results = {}   # stores nested CV scores
 grids   = {}   # stores fitted GridSearchCV objects for the final models
