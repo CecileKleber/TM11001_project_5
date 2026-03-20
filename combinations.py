@@ -37,7 +37,7 @@ from matplotlib.patches import Patch
 # Set DEBUG = False for the full run
 # =============================================================================
 
-DEBUG = False   # <--- flip to False for the real run
+DEBUG = True   # <--- flip to False for the real run
 
 #%%
 # 1. Load data
@@ -218,17 +218,18 @@ feature_selectors = {
 
     # Lasso regression used as feature selector (different from LogisticRegression L1 above)
     # alpha controls sparsity: higher alpha = fewer features kept
+    # Lasso regression used as feature selector — copied exactly from original code
     'LASSO-Reg': {
         'steps': [
             ('scaler',   RobustScaler()),
             ('selector', SelectFromModel(Lasso()))
         ],
         'extra_params': {
-            'selector__estimator__alpha':     [0.1, 1.0]              if DEBUG else [0.01, 0.1, 1.0, 10.0],
-            'selector__estimator__max_iter':  [1000]                  if DEBUG else [1000, 3000, 5000],
-            'selector__estimator__warm_start':[False]                 if DEBUG else [True, False],
-            'selector__estimator__positive':  [True],
-            'selector__estimator__selection': ['cyclic']              if DEBUG else ['random', 'cyclic']
+            'selector__estimator__alpha':      [0.01, 0.1]            if DEBUG else [0.01, 0.1, 1, 10],
+            'selector__estimator__max_iter':   [1000]                   if DEBUG else [1000, 3000, 5000],
+            'selector__estimator__warm_start': [False]                  if DEBUG else [True, False],
+            'selector__estimator__positive':   [True],                  # always True, as in original
+            'selector__estimator__selection':  ['cyclic']               if DEBUG else ['random', 'cyclic']
         }
     },
 
@@ -248,13 +249,13 @@ feature_selectors = {
 # In DEBUG mode: only run the fastest combination (PCA + SVM-RBF) to verify
 # the pipeline works end-to-end before committing to the full run.
 if DEBUG:
-    active_selectors    = {k: feature_selectors[k] for k in ['PCA']}
+    active_selectors    = {k: feature_selectors[k] for k in ['LASSO-Reg']}
     active_classifiers  = {k: classifiers[k]        for k in ['SVM-RBF']}
-    print("DEBUG: running 1 combination only (PCA + SVM-RBF)")
+    print("DEBUG: running 1 combination only (LASSO-Reg + SVM-RBF)")
 else:
-    active_selectors   = {k: feature_selectors[k] for k in [ 'SelectKBest']}
+    active_selectors   = {k: feature_selectors[k] for k in ['LASSO-Reg']}
     active_classifiers = {k: classifiers[k]        for k in ['SVM-RBF']}
-    print("SelectKbest + SVM-RBF)")
+    print("Beide LASSO + SVM-RBF")
 
 results = {}   # stores nested CV scores
 grids   = {}   # stores fitted GridSearchCV objects for the final models
@@ -317,6 +318,8 @@ for sel_name, sel_info in active_selectors.items():
 
         # Store the grid for later final-model fitting
         grids[combo] = grid_search
+
+# %%
 
 #%%
 # 8. Summary table
