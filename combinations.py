@@ -1,4 +1,5 @@
 #%%
+# =============================================================================
 # ECG Classification Pipeline
 # Feature selection: PCA | LASSO (SelectFromModel)
 # Classifiers:       SVM-RBF | KNN | Random Forest | XGBoost
@@ -21,7 +22,7 @@ from sklearn.pipeline import Pipeline
 from sklearn.decomposition import PCA
 from sklearn.feature_selection import SelectFromModel, SelectKBest, f_classif
 from sklearn.model_selection import cross_val_score
-from sklearn.linear_model import LogisticRegression
+from sklearn.linear_model import LogisticRegression, Lasso
 from sklearn.svm import SVC
 from sklearn.neighbors import KNeighborsClassifier
 from sklearn.ensemble import RandomForestClassifier
@@ -117,26 +118,9 @@ plt.grid(True)
 plt.tight_layout()
 plt.show()
 
-#%%
-# 5. Define feature selectors
-# =============================================================================
-
-# --- PCA: keep components explaining 95% of variance ---
-pca_selector = PCA(n_components=0.95, svd_solver='full')
-
-# --- LASSO: logistic regression with L1 penalty as feature gate ---
-lasso_selector = SelectFromModel(
-    LogisticRegression(
-        penalty='l1',
-        solver='liblinear',
-        class_weight='balanced',
-        random_state=42,
-        max_iter=1000
-    )
-)
 
 #%%
-# 6. Define classifiers & their hyperparameter grids
+# 5. Define classifiers & their hyperparameter grids
 # =============================================================================
 
 # Class imbalance ratio for XGBoost
@@ -199,7 +183,7 @@ classifiers = {
 }
 
 #%%
-# 7. Feature selectors — two options
+# 6. Feature selectors — two options
 #    Note: Random Forest is tree-based (no distance) so scaling is skipped
 #          for the RF steps; all other classifiers include RobustScaler.
 # =============================================================================
@@ -232,6 +216,22 @@ feature_selectors = {
         }
     },
 
+    # Lasso regression used as feature selector (different from LogisticRegression L1 above)
+    # alpha controls sparsity: higher alpha = fewer features kept
+    'LASSO-Reg': {
+        'steps': [
+            ('scaler',   RobustScaler()),
+            ('selector', SelectFromModel(Lasso()))
+        ],
+        'extra_params': {
+            'selector__estimator__alpha':     [0.1, 1.0]              if DEBUG else [0.01, 0.1, 1.0, 10.0],
+            'selector__estimator__max_iter':  [1000]                  if DEBUG else [1000, 3000, 5000],
+            'selector__estimator__warm_start':[False]                 if DEBUG else [True, False],
+            'selector__estimator__positive':  [True],
+            'selector__estimator__selection': ['cyclic']              if DEBUG else ['random', 'cyclic']
+        }
+    },
+
     'SelectKBest': {
         'steps': [
             ('scaler',   RobustScaler()),
@@ -242,7 +242,7 @@ feature_selectors = {
 }
 
 #%%
-# 8. Main loop — nested CV for every (selector × classifier) combination
+# 7. Main loop — nested CV for every (selector × classifier) combination
 # =============================================================================
 
 # In DEBUG mode: only run the fastest combination (PCA + SVM-RBF) to verify
@@ -252,9 +252,9 @@ if DEBUG:
     active_classifiers  = {k: classifiers[k]        for k in ['SVM-RBF']}
     print("DEBUG: running 1 combination only (PCA + SVM-RBF)")
 else:
-    active_selectors   = {k: feature_selectors[k] for k in [ 'SelectKBest']}
-    active_classifiers = {k: classifiers[k]        for k in ['SVM-RBF']}
-    print("SelectKbest + SVM-RBF)")
+    active_selectors   = feature_selectors
+    active_classifiers = classifiers
+    print("FULL RUN: running all 8 combinations")
 
 results = {}   # stores nested CV scores
 grids   = {}   # stores fitted GridSearchCV objects for the final models
@@ -319,8 +319,7 @@ for sel_name, sel_info in active_selectors.items():
         grids[combo] = grid_search
 
 #%%
-
-# 9. Summary table
+# 8. Summary table
 # =============================================================================
 
 print("\n" + "=" * 65)
@@ -335,8 +334,7 @@ summary = pd.DataFrame({
 print(summary.to_string(float_format='{:.4f}'.format))
 
 #%%
-# =============================================================================
-# 10. Bar chart — compare all combinations
+# 9. Bar chart — compare all combinations
 # =============================================================================
 
 combos    = list(summary.index)
@@ -369,7 +367,7 @@ plt.savefig(os.path.join(os.path.dirname(os.path.abspath(__file__)), 'comparison
 plt.show()
 
 #%%
-# 11. Final model — train best combination on full training set, evaluate on test
+# 10. Final model — train best combination on full training set, evaluate on test
 # =============================================================================
 
 best_combo = summary.index[0]
@@ -405,4 +403,3 @@ plt.tight_layout()
 plt.savefig(os.path.join(os.path.dirname(os.path.abspath(__file__)), 'confusion_matrix.png'),
             dpi=150)
 plt.show()
-# %%
