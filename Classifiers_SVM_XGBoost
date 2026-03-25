@@ -1,0 +1,1346 @@
+#%% ==================================================================================
+# Basis
+# ====================================================================================
+
+#%% Data loading functions
+
+from numpy import linspace
+import pandas as pd
+import os
+import matplotlib.pyplot as plt
+import numpy as np
+import xgboost as xgb
+from sklearn.model_selection import (train_test_split, StratifiedKFold, GridSearchCV, cross_val_score)
+from sklearn.preprocessing import StandardScaler, RobustScaler, MinMaxScaler
+from sklearn.pipeline import Pipeline
+from sklearn.feature_selection import SelectKBest, f_classif, SelectFromModel
+from sklearn.svm import SVC, LinearSVC
+from sklearn.metrics import (classification_report, roc_auc_score, average_precision_score,confusion_matrix, ConfusionMatrixDisplay)
+from sklearn.decomposition import PCA
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.neighbors import KNeighborsClassifier
+from sklearn.linear_model import LogisticRegression, Lasso
+from sklearn.model_selection import GridSearchCV, StratifiedKFold, cross_validate
+
+#%% Loading data
+
+def load_data():
+    this_directory = os.path.dirname(os.path.abspath(__file__))
+    data = pd.read_csv(os.path.join(this_directory, 'ecg_data', 'ecg_data.csv'), index_col=0)
+    return data
+
+data = load_data()
+
+#%% Kijken hoe de dataset is opgebouwd 
+
+print(f'The number of samples: {len(data.index)}')
+print(f'The number of columns: {len(data.columns)}')
+print(data.head())
+
+print("\nMissing values per column:")
+print(data.isnull().sum())
+
+print("\nTotal missing values:")
+print(data.isnull().sum().sum())
+
+print("\nColumn names:")
+print(data.columns)
+
+X = data.iloc[:, :-1]
+y = data.iloc[:, -1]
+
+print("\nUnieke klassen:")
+print(y.unique())
+
+print(y.value_counts())
+
+#%% Data opsplitsen in train en test
+
+X_train, X_test, y_train, y_test = train_test_split(
+    X, y,
+    test_size=0.2,
+    random_state=42,
+    stratify=y  # Zorgt ervoor dat verdeling 0 en 1 gelijk blijft, want we hadden niet goed verdeelde data 
+)
+
+#%% Algemene dingetjes
+
+# Voor class imbalance
+n_negative = (y_train == 0).sum()
+n_positive = (y_train == 1).sum()
+imbalance_ratio = n_negative / n_positive
+
+#%% ==================================================================================
+# SVM RBF + PCA
+# ====================================================================================
+
+# Pipeline maken
+fixed_scaler = RobustScaler() 
+
+svm_rbf_pca_pipe = Pipeline([
+    ('scaler', fixed_scaler),
+    ('pca', PCA(n_components=0.95, svd_solver='full')),
+    ('clf', SVC(kernel='rbf', probability=True))
+])
+
+# Hyperparameter grid
+svm_rbf_pca_param_grid = {
+    'clf__C': [1e-2, 1e-1, 1, 10, 100],
+    'clf__gamma': [1e-4, 1e-3, 1e-2, 1e-1, 1]
+}
+
+# Inner en outer CV definiëren
+inner_cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
+outer_cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
+
+# Inner grid search
+svm_rbf_pca_grid = GridSearchCV(
+    estimator=svm_rbf_pca_pipe,
+    param_grid=svm_rbf_pca_param_grid,
+    scoring='roc_auc',
+    cv=inner_cv,
+    n_jobs=-1,
+    verbose=1
+)
+
+# Nested CV uitvoeren
+svm_rbf_pca_nested_scores = cross_validate(
+    estimator=svm_rbf_pca_grid,
+    X=X_train,
+    y=y_train,
+    cv=outer_cv,
+    scoring='roc_auc',
+    n_jobs=-1,
+    return_train_score=False,
+    return_estimator=True
+)
+
+# svm_rbf_grid.fit(X_train, y_train)
+
+# print(f"\nBest params for SVM-RBF:")
+# print(svm_rbf_grid.best_params_)
+# print(f"Best CV ROC-AUC: {svm_rbf_grid.best_score_:.4f}")
+
+# Resultaten
+print("Outer fold ROC-AUC scores:")
+print(svm_rbf_pca_nested_scores['test_score'])
+
+print(f"\nGemiddelde nested ROC-AUC: {svm_rbf_pca_nested_scores['test_score'].mean():.4f}")
+print(f"Standaarddeviatie nested ROC-AUC: {svm_rbf_pca_nested_scores['test_score'].std():.4f}")
+
+print("\nBeste parameters per outer fold:")
+for i, est in enumerate(svm_rbf_pca_nested_scores['estimator'], 1):
+    print(f"Fold {i}: {est.best_params_}")
+
+#%% ==================================================================================
+# Final model SVM RBF + PCA
+# ====================================================================================
+
+# Final search op volledige trainingsset
+svm_rbf_pca_grid.fit(X_train, y_train)
+
+# Beste parameters
+print("\nFinal best params for SVM-RBF + PCA:")
+print(svm_rbf_pca_grid.best_params_)
+
+# Beste CV-score op de volledige trainingsset
+print(f"Final CV ROC-AUC on full training set: {svm_rbf_pca_grid.best_score_:.4f}")
+
+# Definitieve model
+final_svm_rbf_pca_model = svm_rbf_pca_grid.best_estimator_
+
+
+#%% ==================================================================================
+# SVM Poly + PCA
+# ====================================================================================
+
+# Pipeline maken
+fixed_scaler = RobustScaler()
+
+svm_poly_pca_pipe = Pipeline([
+    ('scaler', fixed_scaler),
+    ('pca', PCA(n_components=0.95, svd_solver='full')),
+    ('clf', SVC(kernel='poly', probability=True))
+])
+
+# Hyperparameter grid
+svm_poly_pca_param_grid = {
+    'clf__C': [1e-2, 1e-1, 1, 10, 100],
+    'clf__gamma': [1e-4, 1e-3, 1e-2, 1e-1, 1],
+    'clf__degree': [2, 3, 4],
+    'clf__coef0': [0, 0.5, 1]
+}
+
+# Inner en outer CV
+inner_cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
+outer_cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
+
+# Grid search
+svm_poly_pca_grid = GridSearchCV(
+    estimator=svm_poly_pca_pipe,
+    param_grid=svm_poly_pca_param_grid,
+    scoring='roc_auc',
+    cv=inner_cv,
+    n_jobs=-1,
+    verbose=1
+)
+
+
+# Nested cross-validation
+svm_poly_pca_nested_scores = cross_validate(
+    estimator=svm_poly_pca_grid,
+    X=X_train,
+    y=y_train,
+    cv=outer_cv,
+    scoring='roc_auc',
+    n_jobs=-1,
+    return_estimator=True,
+    return_train_score=False
+)
+
+# Resultaten
+print("Outer fold ROC-AUC scores:")
+print(svm_poly_pca_nested_scores['test_score'])
+
+print(f"\nMean nested ROC-AUC: {np.mean(svm_poly_pca_nested_scores['test_score']):.4f}")
+print(f"Std nested ROC-AUC: {np.std(svm_poly_pca_nested_scores['test_score']):.4f}")
+
+print("\nBest params per outer fold:")
+for i, est in enumerate(svm_poly_pca_nested_scores['estimator'], 1):
+    print(f"Fold {i}: {est.best_params_}")
+
+#%% ==================================================================================
+# Final model SVM Poly + PCA
+# ====================================================================================
+
+# Final search op volledige trainingsset
+svm_poly_pca_grid.fit(X_train, y_train)
+
+# Beste parameters
+print("\nFinal best params for SVM-Poly + PCA:")
+print(svm_poly_pca_grid.best_params_)
+
+# Beste CV-score op de volledige trainingsset
+print(f"Final CV ROC-AUC on full training set: {svm_poly_pca_grid.best_score_:.4f}")
+
+# Definitieve model
+final_svm_poly_pca_model = svm_poly_pca_grid.best_estimator_
+
+#%% ==================================================================================
+# K Nearest Neighbours (KNN) + PCA
+# ====================================================================================
+
+# Pipeline maken
+fixed_scaler = RobustScaler()
+
+knn_pca_pipe = Pipeline([
+    ('scaler', fixed_scaler),
+    ('pca', PCA(n_components=0.95, svd_solver='full')),
+    ('clf', KNeighborsClassifier())
+])
+
+# Hyperparameter grid
+# knn_pca_param_grid = {
+#     'clf__n_neighbors': [3,5,7,9,11,13,15,17,19],
+#     'clf__weights': ['uniform','distance'],
+#     'clf__p': [1,2],
+#     'clf__algorithm': ['auto','ball_tree','kd_tree'],
+#     'clf__leaf_size': [20,30,40]
+# }
+
+knn_pca_param_grid = {
+    'clf__n_neighbors': [3, 5, 9, 15],
+    'clf__weights': ['uniform', 'distance'],
+    'clf__p': [1, 2]
+}
+
+# Inner en outer CV
+inner_cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
+outer_cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
+
+# Grid search
+knn_pca_grid = GridSearchCV(
+    estimator=knn_pca_pipe,
+    param_grid=knn_pca_param_grid,
+    scoring='roc_auc',
+    cv=inner_cv,
+    n_jobs=-1,
+    verbose=1
+)
+
+# Nested cross-validation
+knn_pca_nested_scores = cross_validate(
+    estimator=knn_pca_grid,
+    X=X_train,
+    y=y_train,
+    cv=outer_cv,
+    scoring='roc_auc',
+    n_jobs=-1,
+    return_estimator=True,
+    return_train_score=False
+)
+
+# Resultaten
+print("Outer fold ROC-AUC scores:")
+print(knn_pca_nested_scores['test_score'])
+
+print(f"\nMean nested ROC-AUC: {np.mean(knn_pca_nested_scores['test_score']):.4f}")
+print(f"Std nested ROC-AUC: {np.std(knn_pca_nested_scores['test_score']):.4f}")
+
+print("\nBest params per outer fold:")
+for i, est in enumerate(knn_pca_nested_scores['estimator'], 1):
+    print(f"Fold {i}: {est.best_params_}")
+
+#%% ==================================================================================
+# Final model KNN + PCA
+# ====================================================================================
+
+# Final search op volledige trainingsset
+knn_pca_grid.fit(X_train, y_train)
+
+# Beste parameters
+print("\nFinal best params for KNN + PCA:")
+print(knn_pca_grid.best_params_)
+
+# Beste CV-score op de volledige trainingsset
+print(f"Final CV ROC-AUC on full training set: {knn_pca_grid.best_score_:.4f}")
+
+# Definitieve model
+final_knn_pca_model = knn_pca_grid.best_estimator_
+
+#%% ==================================================================================
+# Random Forest + PCA
+# ====================================================================================
+
+# Pipeline maken
+
+rf_pca_pipe = Pipeline([
+    ('scaler', RobustScaler()),
+    ('pca', PCA(n_components=0.95, svd_solver='full')),
+    ('clf', RandomForestClassifier(random_state=42))
+])
+# Bij Random Forest hoef je in principe niet te schalen, omdat bomen niet afstandsgebaseerd zijn.
+# Behalve bij PCA, die heeft wel een scaler nodig.
+
+# Hyperparameter grid
+# rf_pca_param_grid = {
+#     'clf__n_estimators': [100, 200, 500],
+#     'clf__max_depth': [None, 5, 10, 20, 30],
+#     'clf__max_features': ['sqrt', 'log2', None],
+#     'clf__min_samples_split': [2, 5, 10],
+#     'clf__min_samples_leaf': [1, 2, 4]
+# }
+
+rf_pca_param_grid = {
+    'clf__n_estimators': [100, 200, 300],
+    'clf__max_depth': [None, 10, 20],
+    'clf__max_features': ['sqrt'],
+    'clf__min_samples_split': [2, 5, 10],
+    'clf__min_samples_leaf': [1]
+}
+
+# Inner en outer CV
+inner_cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
+outer_cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
+
+# Grid search
+rf_pca_grid = GridSearchCV(
+    estimator=rf_pca_pipe,
+    param_grid=rf_pca_param_grid,
+    scoring='roc_auc',
+    cv=inner_cv,
+    n_jobs=-1,
+    verbose=1
+)
+
+# Nested cross-validation
+rf_pca_nested_scores = cross_validate(
+    estimator=rf_pca_grid,
+    X=X_train,
+    y=y_train,
+    cv=outer_cv,
+    scoring='roc_auc',
+    n_jobs=-1,
+    return_estimator=True,
+    return_train_score=False
+)
+
+# Resultaten
+print("Outer fold ROC-AUC scores:")
+print(rf_pca_nested_scores['test_score'])
+
+print(f"\nMean nested ROC-AUC: {np.mean(rf_pca_nested_scores['test_score']):.4f}")
+print(f"Std nested ROC-AUC: {np.std(rf_pca_nested_scores['test_score']):.4f}")
+
+print("\nBest params per outer fold:")
+for i, est in enumerate(rf_pca_nested_scores['estimator'], 1):
+    print(f"Fold {i}: {est.best_params_}")
+
+#%% ==================================================================================
+# Final model Random Forest + PCA
+# ====================================================================================
+
+# Final search op volledige trainingsset
+rf_pca_grid.fit(X_train, y_train)
+
+# Beste parameters
+print("\nFinal best params for Random Forest + PCA:")
+print(rf_pca_grid.best_params_)
+
+# Beste CV-score op de volledige trainingsset
+print(f"Final CV ROC-AUC on full training set: {rf_pca_grid.best_score_:.4f}")
+
+# Definitieve model
+final_rf_pca_model = rf_pca_grid.best_estimator_
+
+#%% ==================================================================================
+# XGBoost + PCA
+# ====================================================================================
+
+xgb_pca_pipe = Pipeline([
+    ('scaler', RobustScaler()),
+    ('pca', PCA(n_components=0.95, svd_solver='full')),
+    ('clf', xgb.XGBClassifier(
+        objective='binary:logistic',
+        eval_metric='auc',
+        scale_pos_weight=imbalance_ratio,
+        random_state=42
+    ))
+])
+# Bij XGBoost heb je geen scaler nodig. Maar bij PCA wel.
+
+# Hyperparameter grid
+# xgb_pca_param_grid = {
+#     'clf__n_estimators': [100, 200, 300],
+#     'clf__max_depth': [3, 5, 7],
+#     'clf__learning_rate': [0.01, 0.05, 0.1],
+#     'clf__subsample': [0.8, 1.0],
+#     'clf__colsample_bytree': [0.8, 1.0]
+# }
+
+xgb_pca_param_grid = {
+    'clf__n_estimators': [100, 200, 300],
+    'clf__max_depth': [3, 5, 7],
+    'clf__learning_rate': [0.01, 0.05, 0.1]
+}
+
+# Inner en outer CV
+inner_cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
+outer_cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
+
+# Grid search
+xgb_pca_grid = GridSearchCV(
+    estimator=xgb_pca_pipe,
+    param_grid=xgb_pca_param_grid,
+    scoring='roc_auc',
+    cv=inner_cv,
+    n_jobs=-1,
+    verbose=1
+)
+
+# Nested cross-validation
+xgb_pca_nested_scores = cross_validate(
+    estimator=xgb_pca_grid,
+    X=X_train,
+    y=y_train,
+    cv=outer_cv,
+    scoring='roc_auc',
+    n_jobs=-1,
+    return_estimator=True,
+    return_train_score=False
+)
+
+# Resultaten
+print("Outer fold ROC-AUC scores:")
+print(xgb_pca_nested_scores['test_score'])
+
+print(f"\nMean nested ROC-AUC: {np.mean(xgb_pca_nested_scores['test_score']):.4f}")
+print(f"Std nested ROC-AUC: {np.std(xgb_pca_nested_scores['test_score']):.4f}")
+
+print("\nBest params per outer fold:")
+for i, est in enumerate(xgb_pca_nested_scores['estimator'], 1):
+    print(f"Fold {i}: {est.best_params_}")
+
+#%% ==================================================================================
+# Final model XGBoost + PCA
+# ====================================================================================
+
+# Final search op volledige trainingsset
+xgb_pca_grid.fit(X_train, y_train)
+
+# Beste parameters
+print("\nFinal best params for XGBoost + PCA:")
+print(xgb_pca_grid.best_params_)
+
+# Beste CV-score op de volledige trainingsset
+print(f"Final CV ROC-AUC on full training set: {xgb_pca_grid.best_score_:.4f}")
+
+# Definitieve model
+final_xgb_pca_model = xgb_pca_grid.best_estimator_
+
+#%% ==================================================================================
+# SVM RBF + LASSO
+# ====================================================================================
+
+svm_rbf_lasso_pipe = Pipeline([
+    ('scaler', RobustScaler()),
+    ('selector', SelectFromModel(
+        LogisticRegression(
+            penalty='l1',
+            solver='liblinear',
+            class_weight='balanced',
+            random_state=42,
+            max_iter=3000
+        )
+    )),
+    ('clf', SVC(kernel='rbf', probability=True))
+])
+
+svm_rbf_lasso_param_grid = {
+    'selector__estimator__C': [0.01, 0.1, 1.0, 10.0],
+    'clf__C': [1e-2, 1e-1, 1, 10, 100],
+    'clf__gamma': [1e-4, 1e-3, 1e-2, 1e-1, 1]
+}
+
+
+# Inner en outer CV definiëren
+inner_cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
+outer_cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
+
+# Inner grid search
+svm_rbf_lasso_grid = GridSearchCV(
+    estimator=svm_rbf_lasso_pipe,
+    param_grid=svm_rbf_lasso_param_grid,
+    scoring='roc_auc',
+    cv=inner_cv,
+    n_jobs=-1,
+    verbose=1
+)
+
+# Nested CV uitvoeren
+svm_rbf_lasso_nested_scores = cross_validate(
+    estimator=svm_rbf_lasso_grid,
+    X=X_train,
+    y=y_train,
+    cv=outer_cv,
+    scoring='roc_auc',
+    n_jobs=-1,
+    return_train_score=False,
+    return_estimator=True
+)
+
+
+# Resultaten
+print("Outer fold ROC-AUC scores:")
+print(svm_rbf_lasso_nested_scores['test_score'])
+
+print(f"\nGemiddelde nested ROC-AUC: {svm_rbf_lasso_nested_scores['test_score'].mean():.4f}")
+print(f"Standaarddeviatie nested ROC-AUC: {svm_rbf_lasso_nested_scores['test_score'].std():.4f}")
+
+print("\nBeste parameters per outer fold:")
+for i, est in enumerate(svm_rbf_lasso_nested_scores['estimator'], 1):
+    print(f"Fold {i}: {est.best_params_}")
+
+#%% ==================================================================================
+# Final model SVM RBF + LASSO
+# ====================================================================================
+
+# Final search op volledige trainingsset
+svm_rbf_lasso_grid.fit(X_train, y_train)
+
+# Beste parameters
+print("\nFinal best params for SVM-RBF + LASSO:")
+print(svm_rbf_lasso_grid.best_params_)
+
+# Beste CV-score op de volledige trainingsset
+print(f"Final CV ROC-AUC on full training set: {svm_rbf_lasso_grid.best_score_:.4f}")
+
+# Definitieve model
+final_svm_rbf_lasso_model = svm_rbf_lasso_grid.best_estimator_
+
+
+#%% ==================================================================================
+# SVM Poly + LASSO
+# ====================================================================================
+
+# Pipeline maken
+
+svm_poly_lasso_pipe = Pipeline([
+    ('scaler', RobustScaler()),
+    ('selector', SelectFromModel(
+        LogisticRegression(
+            penalty='l1',
+            solver='liblinear',
+            class_weight='balanced',
+            random_state=42,
+            max_iter=3000
+        )
+    )),
+    ('clf', SVC(kernel='poly', probability=True))
+])
+
+svm_poly_lasso_param_grid = {
+    'selector__estimator__C': [0.01, 0.1, 1.0, 10.0],
+    'clf__C': [1e-2, 1e-1, 1, 10, 100],
+    'clf__gamma': [1e-4, 1e-3, 1e-2, 1e-1, 1],
+    'clf__degree': [2, 3, 4],
+    'clf__coef0': [0, 0.5, 1]
+}
+
+# Inner en outer CV
+inner_cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
+outer_cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
+
+# Grid search
+svm_poly_lasso_grid = GridSearchCV(
+    estimator=svm_poly_lasso_pipe,
+    param_grid=svm_poly_lasso_param_grid,
+    scoring='roc_auc',
+    cv=inner_cv,
+    n_jobs=-1,
+    verbose=1
+)
+
+# Nested cross-validation
+svm_poly_lasso_nested_scores = cross_validate(
+    estimator=svm_poly_lasso_grid,
+    X=X_train,
+    y=y_train,
+    cv=outer_cv,
+    scoring='roc_auc',
+    n_jobs=-1,
+    return_estimator=True,
+    return_train_score=False
+)
+
+# Resultaten
+print("Outer fold ROC-AUC scores:")
+print(svm_poly_lasso_nested_scores['test_score'])
+
+print(f"\nMean nested ROC-AUC: {np.mean(svm_poly_lasso_nested_scores['test_score']):.4f}")
+print(f"Std nested ROC-AUC: {np.std(svm_poly_lasso_nested_scores['test_score']):.4f}")
+
+print("\nBest params per outer fold:")
+for i, est in enumerate(svm_poly_lasso_nested_scores['estimator'], 1):
+    print(f"Fold {i}: {est.best_params_}")
+
+#%% ==================================================================================
+# Final model SVM Poly + LASSO
+# ====================================================================================
+
+# Final search op volledige trainingsset
+svm_poly_lasso_grid.fit(X_train, y_train)
+
+# Beste parameters
+print("\nFinal best params for SVM-Poly + LASSO:")
+print(svm_poly_lasso_grid.best_params_)
+
+# Beste CV-score op de volledige trainingsset
+print(f"Final CV ROC-AUC on full training set: {svm_poly_lasso_grid.best_score_:.4f}")
+
+# Definitieve model
+final_svm_poly_lasso_model = svm_poly_lasso_grid.best_estimator_
+
+#%% ==================================================================================
+# K Nearest Neighbours (KNN) + LASSO
+# ====================================================================================
+
+# Pipeline maken
+
+knn_lasso_pipe = Pipeline([
+    ('scaler', RobustScaler()),
+    ('selector', SelectFromModel(
+        LogisticRegression(
+            penalty='l1',
+            solver='liblinear',
+            class_weight='balanced',
+            random_state=42,
+            max_iter=3000
+        )
+    )),
+    ('clf', KNeighborsClassifier())
+])
+
+# knn_lasso_param_grid = {
+#     'selector__estimator__C': [0.01, 0.1, 1.0, 10.0],
+#     'clf__n_neighbors': [3, 5, 7, 9, 11, 13, 15, 17, 19],
+#     'clf__weights': ['uniform', 'distance'],
+#     'clf__p': [1, 2],
+#     'clf__algorithm': ['auto', 'ball_tree', 'kd_tree'],
+#     'clf__leaf_size': [20, 30, 40]
+# }
+
+knn_lasso_param_grid = {
+    'selector__estimator__C': [0.01, 0.1, 1.0, 10.0],
+    'clf__n_neighbors': [3, 5, 9, 15],
+    'clf__weights': ['uniform', 'distance'],
+    'clf__p': [1, 2]
+}
+
+# Inner en outer CV
+inner_cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
+outer_cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
+
+# Grid search
+knn_lasso_grid = GridSearchCV(
+    estimator=knn_lasso_pipe,
+    param_grid=knn_lasso_param_grid,
+    scoring='roc_auc',
+    cv=inner_cv,
+    n_jobs=-1,
+    verbose=1
+)
+
+# Nested cross-validation
+knn_lasso_nested_scores = cross_validate(
+    estimator=knn_lasso_grid,
+    X=X_train,
+    y=y_train,
+    cv=outer_cv,
+    scoring='roc_auc',
+    n_jobs=-1,
+    return_estimator=True,
+    return_train_score=False
+)
+
+# Resultaten
+print("Outer fold ROC-AUC scores:")
+print(knn_lasso_nested_scores['test_score'])
+
+print(f"\nMean nested ROC-AUC: {np.mean(knn_lasso_nested_scores['test_score']):.4f}")
+print(f"Std nested ROC-AUC: {np.std(knn_lasso_nested_scores['test_score']):.4f}")
+
+print("\nBest params per outer fold:")
+for i, est in enumerate(knn_lasso_nested_scores['estimator'], 1):
+    print(f"Fold {i}: {est.best_params_}")
+
+#%% ==================================================================================
+# Final model KNN + LASSO
+# ====================================================================================
+
+# Final search op volledige trainingsset
+knn_lasso_grid.fit(X_train, y_train)
+
+# Beste parameters
+print("\nFinal best params for KNN + LASSO:")
+print(knn_lasso_grid.best_params_)
+
+# Beste CV-score op de volledige trainingsset
+print(f"Final CV ROC-AUC on full training set: {knn_lasso_grid.best_score_:.4f}")
+
+# Definitieve model
+final_knn_lasso_model = knn_lasso_grid.best_estimator_
+
+#%% ==================================================================================
+# Random Forest + LASSO
+# ====================================================================================
+
+# Pipeline maken
+
+rf_lasso_pipe = Pipeline([
+    ('scaler', RobustScaler()),
+    ('selector', SelectFromModel(
+        LogisticRegression(
+            penalty='l1',
+            solver='liblinear',
+            class_weight='balanced',
+            random_state=42,
+            max_iter=3000
+        )
+    )),
+    ('clf', RandomForestClassifier(random_state=42))
+])
+
+# rf_lasso_param_grid = {
+#     'selector__estimator__C': [0.01, 0.1, 1.0, 10.0],
+#     'clf__n_estimators': [100, 200, 500],
+#     'clf__max_depth': [None, 5, 10, 20, 30],
+#     'clf__max_features': ['sqrt', 'log2', None],
+#     'clf__min_samples_split': [2, 5, 10],
+#     'clf__min_samples_leaf': [1, 2, 4]
+# }
+
+rf_lasso_param_grid = {
+    'clf__n_estimators': [100, 200, 300],
+    'clf__max_depth': [None, 10, 20],
+    'clf__max_features': ['sqrt'],
+    'clf__min_samples_split': [2, 5, 10],
+    'clf__min_samples_leaf': [1]
+}
+
+# Inner en outer CV
+inner_cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
+outer_cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
+
+# Grid search
+rf_lasso_grid = GridSearchCV(
+    estimator=rf_lasso_pipe,
+    param_grid=rf_lasso_param_grid,
+    scoring='roc_auc',
+    cv=inner_cv,
+    n_jobs=-1,
+    verbose=1
+)
+
+# Nested cross-validation
+rf_lasso_nested_scores = cross_validate(
+    estimator=rf_lasso_grid,
+    X=X_train,
+    y=y_train,
+    cv=outer_cv,
+    scoring='roc_auc',
+    n_jobs=-1,
+    return_estimator=True,
+    return_train_score=False
+)
+
+# Resultaten
+print("Outer fold ROC-AUC scores:")
+print(rf_lasso_nested_scores['test_score'])
+
+print(f"\nMean nested ROC-AUC: {np.mean(rf_lasso_nested_scores['test_score']):.4f}")
+print(f"Std nested ROC-AUC: {np.std(rf_lasso_nested_scores['test_score']):.4f}")
+
+print("\nBest params per outer fold:")
+for i, est in enumerate(rf_lasso_nested_scores['estimator'], 1):
+    print(f"Fold {i}: {est.best_params_}")
+
+#%% ==================================================================================
+# Final model Random Forest + LASSO
+# ====================================================================================
+
+# Final search op volledige trainingsset
+rf_lasso_grid.fit(X_train, y_train)
+
+# Beste parameters
+print("\nFinal best params for Random Forest + LASSO:")
+print(rf_lasso_grid.best_params_)
+
+# Beste CV-score op de volledige trainingsset
+print(f"Final CV ROC-AUC on full training set: {rf_lasso_grid.best_score_:.4f}")
+
+# Definitieve model
+final_rf_lasso_model = rf_lasso_grid.best_estimator_
+
+#%% ==================================================================================
+# XGBoost + LASSO
+# ====================================================================================
+
+xgb_lasso_pipe = Pipeline([
+    ('scaler', RobustScaler()),
+    ('selector', SelectFromModel(
+        LogisticRegression(
+            penalty='l1',
+            solver='liblinear',
+            class_weight='balanced',
+            random_state=42,
+            max_iter=3000
+        )
+    )),
+    ('clf', xgb.XGBClassifier(
+        objective='binary:logistic',
+        eval_metric='auc',
+        scale_pos_weight=imbalance_ratio,
+        random_state=42
+    ))
+])
+
+# xgb_lasso_param_grid = {
+#     'selector__estimator__C': [0.01, 0.1, 1.0, 10.0],
+#     'clf__n_estimators': [100, 200, 300],
+#     'clf__max_depth': [3, 5, 7],
+#     'clf__learning_rate': [0.01, 0.05, 0.1],
+#     'clf__subsample': [0.8, 1.0],
+#     'clf__colsample_bytree': [0.8, 1.0]
+# }
+
+xgb_lasso_param_grid = {
+    'clf__n_estimators': [100, 200, 300],
+    'clf__max_depth': [3, 5, 7],
+    'clf__learning_rate': [0.01, 0.05, 0.1]
+}
+
+# Inner en outer CV
+inner_cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
+outer_cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
+
+# Grid search
+xgb_lasso_grid = GridSearchCV(
+    estimator=xgb_lasso_pipe,
+    param_grid=xgb_lasso_param_grid,
+    scoring='roc_auc',
+    cv=inner_cv,
+    n_jobs=-1,
+    verbose=1
+)
+
+# Nested cross-validation
+xgb_lasso_nested_scores = cross_validate(
+    estimator=xgb_lasso_grid,
+    X=X_train,
+    y=y_train,
+    cv=outer_cv,
+    scoring='roc_auc',
+    n_jobs=-1,
+    return_estimator=True,
+    return_train_score=False
+)
+
+# Resultaten
+print("Outer fold ROC-AUC scores:")
+print(xgb_lasso_nested_scores['test_score'])
+
+print(f"\nMean nested ROC-AUC: {np.mean(xgb_lasso_nested_scores['test_score']):.4f}")
+print(f"Std nested ROC-AUC: {np.std(xgb_lasso_nested_scores['test_score']):.4f}")
+
+print("\nBest params per outer fold:")
+for i, est in enumerate(xgb_lasso_nested_scores['estimator'], 1):
+    print(f"Fold {i}: {est.best_params_}")
+
+#%% ==================================================================================
+# Final model XGBoost + LASSO
+# ====================================================================================
+
+# Final search op volledige trainingsset
+xgb_lasso_grid.fit(X_train, y_train)
+
+# Beste parameters
+print("\nFinal best params for XGBoost + LASSO:")
+print(xgb_lasso_grid.best_params_)
+
+# Beste CV-score op de volledige trainingsset
+print(f"Final CV ROC-AUC on full training set: {xgb_lasso_grid.best_score_:.4f}")
+
+# Definitieve model
+final_xgb_lasso_model = xgb_lasso_grid.best_estimator_
+
+#%% ==================================================================================
+# SVM RBF + LASSO-Reg
+# ====================================================================================
+
+svm_rbf_lassoreg_pipe = Pipeline([
+    ('scaler', RobustScaler()),
+    ('selector', SelectFromModel(Lasso())),
+    ('clf', SVC(kernel='rbf', probability=True))
+])
+
+# svm_rbf_lassoreg_param_grid = {
+#     'selector__estimator__alpha': [0.01, 0.1, 1, 10],
+#     'selector__estimator__max_iter': [1000, 3000, 5000],
+#     'selector__estimator__warm_start': [True, False],
+#     'selector__estimator__positive': [True],
+#     'selector__estimator__selection': ['random', 'cyclic'],
+#     'clf__C': [1e-2, 1e-1, 1, 10, 100],
+#     'clf__gamma': [1e-4, 1e-3, 1e-2, 1e-1, 1]
+# }
+
+svm_rbf_lassoreg_param_grid = {
+    'selector__estimator__alpha': [0.01, 0.1, 1, 10],
+    'selector__estimator__positive': [True, False],
+    'selector__estimator__max_iter': [5000],
+    'selector__estimator__selection': ['cyclic'],
+    'clf__C': [1e-2, 1e-1, 1, 10, 100],
+    'clf__gamma': [1e-4, 1e-3, 1e-2, 1e-1, 1]
+}
+
+# Inner en outer CV definiëren
+inner_cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
+outer_cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
+
+# Inner grid search
+svm_rbf_lassoreg_grid = GridSearchCV(
+    estimator=svm_rbf_lassoreg_pipe,
+    param_grid=svm_rbf_lassoreg_param_grid,
+    scoring='roc_auc',
+    cv=inner_cv,
+    n_jobs=-1,
+    verbose=1
+)
+
+# Nested CV uitvoeren
+svm_rbf_lassoreg_nested_scores = cross_validate(
+    estimator=svm_rbf_lassoreg_grid,
+    X=X_train,
+    y=y_train,
+    cv=outer_cv,
+    scoring='roc_auc',
+    n_jobs=-1,
+    return_train_score=False,
+    return_estimator=True
+)
+
+
+# Resultaten
+print("Outer fold ROC-AUC scores:")
+print(svm_rbf_lassoreg_nested_scores['test_score'])
+
+print(f"\nGemiddelde nested ROC-AUC: {svm_rbf_lassoreg_nested_scores['test_score'].mean():.4f}")
+print(f"Standaarddeviatie nested ROC-AUC: {svm_rbf_lassoreg_nested_scores['test_score'].std():.4f}")
+
+print("\nBeste parameters per outer fold:")
+for i, est in enumerate(svm_rbf_lassoreg_nested_scores['estimator'], 1):
+    print(f"Fold {i}: {est.best_params_}")
+
+#%% ==================================================================================
+# Final model SVM RBF + LASSO-Reg
+# ====================================================================================
+
+# Final search op volledige trainingsset
+svm_rbf_lassoreg_grid.fit(X_train, y_train)
+
+# Beste parameters
+print("\nFinal best params for SVM-RBF + LASSO-Reg:")
+print(svm_rbf_lassoreg_grid.best_params_)
+
+# Beste CV-score op de volledige trainingsset
+print(f"Final CV ROC-AUC on full training set: {svm_rbf_lassoreg_grid.best_score_:.4f}")
+
+# Definitieve model
+final_svm_rbf_lassoreg_model = svm_rbf_lassoreg_grid.best_estimator_
+
+
+#%% ==================================================================================
+# SVM Poly + LASSO-Reg
+# ====================================================================================
+
+svm_poly_lassoreg_pipe = Pipeline([
+    ('scaler', RobustScaler()),
+    ('selector', SelectFromModel(Lasso())),
+    ('clf', SVC(kernel='poly', probability=True))
+])
+
+svm_poly_lassoreg_param_grid = {
+    'selector__estimator__alpha': [0.01, 0.1, 1, 10],
+    'selector__estimator__max_iter': [1000, 3000, 5000],
+    'selector__estimator__warm_start': [True, False],
+    'selector__estimator__positive': [True],
+    'selector__estimator__selection': ['random', 'cyclic'],
+    'clf__C': [1e-2, 1e-1, 1, 10, 100],
+    'clf__gamma': [1e-4, 1e-3, 1e-2, 1e-1, 1],
+    'clf__degree': [2, 3, 4],
+    'clf__coef0': [0, 0.5, 1]
+}
+
+
+# Inner en outer CV
+inner_cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
+outer_cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
+
+# Grid search
+svm_poly_lassoreg_grid = GridSearchCV(
+    estimator=svm_poly_lassoreg_pipe,
+    param_grid=svm_poly_lassoreg_param_grid,
+    scoring='roc_auc',
+    cv=inner_cv,
+    n_jobs=-1,
+    verbose=1
+)
+
+# Nested cross-validation
+svm_poly_lassoreg_nested_scores = cross_validate(
+    estimator=svm_poly_lassoreg_grid,
+    X=X_train,
+    y=y_train,
+    cv=outer_cv,
+    scoring='roc_auc',
+    n_jobs=-1,
+    return_estimator=True,
+    return_train_score=False
+)
+
+# Resultaten
+print("Outer fold ROC-AUC scores:")
+print(svm_poly_lassoreg_nested_scores['test_score'])
+
+print(f"\nMean nested ROC-AUC: {np.mean(svm_poly_lassoreg_nested_scores['test_score']):.4f}")
+print(f"Std nested ROC-AUC: {np.std(svm_poly_lassoreg_nested_scores['test_score']):.4f}")
+
+print("\nBest params per outer fold:")
+for i, est in enumerate(svm_poly_lassoreg_nested_scores['estimator'], 1):
+    print(f"Fold {i}: {est.best_params_}")
+
+#%% ==================================================================================
+# Final model SVM Poly + LASSO-Reg
+# ====================================================================================
+
+# Final search op volledige trainingsset
+svm_poly_lassoreg_grid.fit(X_train, y_train)
+
+# Beste parameters
+print("\nFinal best params for SVM-Poly + LASSO-Reg:")
+print(svm_poly_lassoreg_grid.best_params_)
+
+# Beste CV-score op de volledige trainingsset
+print(f"Final CV ROC-AUC on full training set: {svm_poly_lassoreg_grid.best_score_:.4f}")
+
+# Definitieve model
+final_svm_poly_lassoreg_model = svm_poly_lassoreg_grid.best_estimator_
+
+#%% ==================================================================================
+# KNN + LASSO-Reg
+# ====================================================================================
+
+knn_lassoreg_pipe = Pipeline([
+    ('scaler', RobustScaler()),
+    ('selector', SelectFromModel(Lasso())),
+    ('clf', KNeighborsClassifier())
+])
+
+# knn_lassoreg_param_grid = {
+#     'selector__estimator__alpha': [0.01, 0.1, 1, 10],
+#     'selector__estimator__max_iter': [1000, 3000, 5000],
+#     'selector__estimator__warm_start': [True, False],
+#     'selector__estimator__positive': [True],
+#     'selector__estimator__selection': ['random', 'cyclic'],
+#     'clf__n_neighbors': [3, 5, 7, 9, 11, 13, 15, 17, 19],
+#     'clf__weights': ['uniform', 'distance'],
+#     'clf__p': [1, 2],
+#     'clf__algorithm': ['auto', 'ball_tree', 'kd_tree'],
+#     'clf__leaf_size': [20, 30, 40]
+# }
+
+knn_lassoreg_param_grid = {
+    'selector__estimator__alpha': [0.01, 0.1, 1, 10],
+    'selector__estimator__positive': [True, False],
+    'selector__estimator__max_iter': [5000],
+    'selector__estimator__selection': ['cyclic'],
+    'clf__n_neighbors': [3, 5, 9, 15],
+    'clf__weights': ['uniform', 'distance'],
+    'clf__p': [1, 2]
+}
+
+# Inner en outer CV
+inner_cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
+outer_cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
+
+# Grid search
+knn_lassoreg_grid = GridSearchCV(
+    estimator=knn_lassoreg_pipe,
+    param_grid=knn_lassoreg_param_grid,
+    scoring='roc_auc',
+    cv=inner_cv,
+    n_jobs=-1,
+    verbose=1
+)
+
+# Nested cross-validation
+knn_lassoreg_nested_scores = cross_validate(
+    estimator=knn_lassoreg_grid,
+    X=X_train,
+    y=y_train,
+    cv=outer_cv,
+    scoring='roc_auc',
+    n_jobs=-1,
+    return_estimator=True,
+    return_train_score=False
+)
+
+# Resultaten
+print("Outer fold ROC-AUC scores:")
+print(knn_lassoreg_nested_scores['test_score'])
+
+print(f"\nMean nested ROC-AUC: {np.mean(knn_lassoreg_nested_scores['test_score']):.4f}")
+print(f"Std nested ROC-AUC: {np.std(knn_lassoreg_nested_scores['test_score']):.4f}")
+
+print("\nBest params per outer fold:")
+for i, est in enumerate(knn_lassoreg_nested_scores['estimator'], 1):
+    print(f"Fold {i}: {est.best_params_}")
+
+#%% ==================================================================================
+# Final model KNN + LASSO-Reg
+# ====================================================================================
+
+# Final search op volledige trainingsset
+knn_lassoreg_grid.fit(X_train, y_train)
+
+# Beste parameters
+print("\nFinal best params for KNN + LASSO-Reg:")
+print(knn_lassoreg_grid.best_params_)
+
+# Beste CV-score op de volledige trainingsset
+print(f"Final CV ROC-AUC on full training set: {knn_lassoreg_grid.best_score_:.4f}")
+
+# Definitieve model
+final_knn_lassoreg_model = knn_lassoreg_grid.best_estimator_
+
+#%% ==================================================================================
+# Random Forest + LASSO-Reg
+# ====================================================================================
+
+rf_lassoreg_pipe = Pipeline([
+    ('scaler', RobustScaler()),
+    ('selector', SelectFromModel(Lasso())),
+    ('clf', RandomForestClassifier(random_state=42))
+])
+
+# rf_lassoreg_param_grid = {
+#     'selector__estimator__alpha': [0.01, 0.1, 1, 10],
+#     'selector__estimator__max_iter': [1000, 3000, 5000],
+#     'selector__estimator__warm_start': [True, False],
+#     'selector__estimator__positive': [True],
+#     'selector__estimator__selection': ['random', 'cyclic'],
+#     'clf__n_estimators': [100, 200, 500],
+#     'clf__max_depth': [None, 5, 10, 20, 30],
+#     'clf__max_features': ['sqrt', 'log2', None],
+#     'clf__min_samples_split': [2, 5, 10],
+#     'clf__min_samples_leaf': [1, 2, 4]
+# }
+
+rf_lassoreg_param_grid = {
+    'selector__estimator__alpha': [0.01, 0.1, 1, 10],
+    'selector__estimator__positive': [True, False],
+    'selector__estimator__max_iter': [5000],
+    'selector__estimator__selection': ['cyclic'],
+    'clf__n_estimators': [100, 200, 300],
+    'clf__max_depth': [None, 10, 20],
+    'clf__max_features': ['sqrt'],
+    'clf__min_samples_split': [2, 5, 10],
+    'clf__min_samples_leaf': [1]
+}
+
+# Inner en outer CV
+inner_cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
+outer_cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
+
+# Grid search
+rf_lassoreg_grid = GridSearchCV(
+    estimator=rf_lassoreg_pipe,
+    param_grid=rf_lassoreg_param_grid,
+    scoring='roc_auc',
+    cv=inner_cv,
+    n_jobs=-1,
+    verbose=1
+)
+
+# Nested cross-validation
+rf_lassoreg_nested_scores = cross_validate(
+    estimator=rf_lassoreg_grid,
+    X=X_train,
+    y=y_train,
+    cv=outer_cv,
+    scoring='roc_auc',
+    n_jobs=-1,
+    return_estimator=True,
+    return_train_score=False
+)
+
+# Resultaten
+print("Outer fold ROC-AUC scores:")
+print(rf_lassoreg_nested_scores['test_score'])
+
+print(f"\nMean nested ROC-AUC: {np.mean(rf_lassoreg_nested_scores['test_score']):.4f}")
+print(f"Std nested ROC-AUC: {np.std(rf_lassoreg_nested_scores['test_score']):.4f}")
+
+print("\nBest params per outer fold:")
+for i, est in enumerate(rf_lassoreg_nested_scores['estimator'], 1):
+    print(f"Fold {i}: {est.best_params_}")
+
+#%% ==================================================================================
+# Final model Random Forest + LASSO-Reg
+# ====================================================================================
+
+# Final search op volledige trainingsset
+rf_lassoreg_grid.fit(X_train, y_train)
+
+# Beste parameters
+print("\nFinal best params for Random Forest + LASSO-Reg:")
+print(rf_lassoreg_grid.best_params_)
+
+# Beste CV-score op de volledige trainingsset
+print(f"Final CV ROC-AUC on full training set: {rf_lassoreg_grid.best_score_:.4f}")
+
+# Definitieve model
+final_rf_lassoreg_model = rf_lassoreg_grid.best_estimator_
+
+#%% ==================================================================================
+# XGBoost + LASSO-Reg
+# ====================================================================================
+
+xgb_lassoreg_pipe = Pipeline([
+    ('scaler', RobustScaler()),
+    ('selector', SelectFromModel(Lasso())),
+    ('clf', xgb.XGBClassifier(
+        objective='binary:logistic',
+        eval_metric='auc',
+        scale_pos_weight=imbalance_ratio,
+        random_state=42
+    ))
+])
+
+# xgb_lassoreg_param_grid = {
+#     'selector__estimator__alpha': [0.01, 0.1, 1, 10],
+#     'selector__estimator__max_iter': [1000, 3000, 5000],
+#     'selector__estimator__warm_start': [True, False],
+#     'selector__estimator__positive': [True],
+#     'selector__estimator__selection': ['random', 'cyclic'],
+#     'clf__n_estimators': [100, 200, 300],
+#     'clf__max_depth': [3, 5, 7],
+#     'clf__learning_rate': [0.01, 0.05, 0.1],
+#     'clf__subsample': [0.8, 1.0],
+#     'clf__colsample_bytree': [0.8, 1.0]
+# }
+
+xgb_lassoreg_param_grid = {
+    'selector__estimator__alpha': [0.01, 0.1, 1, 10],
+    'selector__estimator__positive': [True, False],
+    'selector__estimator__max_iter': [5000],
+    'selector__estimator__selection': ['cyclic'],
+    'clf__n_estimators': [100, 200, 300],
+    'clf__max_depth': [3, 5, 7],
+    'clf__learning_rate': [0.01, 0.05, 0.1]
+}
+
+# Inner en outer CV
+inner_cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
+outer_cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
+
+# Grid search
+xgb_lassoreg_grid = GridSearchCV(
+    estimator=xgb_lassoreg_pipe,
+    param_grid=xgb_lassoreg_param_grid,
+    scoring='roc_auc',
+    cv=inner_cv,
+    n_jobs=-1,
+    verbose=1
+)
+
+# Nested cross-validation
+xgb_lassoreg_nested_scores = cross_validate(
+    estimator=xgb_lassoreg_grid,
+    X=X_train,
+    y=y_train,
+    cv=outer_cv,
+    scoring='roc_auc',
+    n_jobs=-1,
+    return_estimator=True,
+    return_train_score=False
+)
+
+# Resultaten
+print("Outer fold ROC-AUC scores:")
+print(xgb_lassoreg_nested_scores['test_score'])
+
+print(f"\nMean nested ROC-AUC: {np.mean(xgb_lassoreg_nested_scores['test_score']):.4f}")
+print(f"Std nested ROC-AUC: {np.std(xgb_lassoreg_nested_scores['test_score']):.4f}")
+
+print("\nBest params per outer fold:")
+for i, est in enumerate(xgb_lassoreg_nested_scores['estimator'], 1):
+    print(f"Fold {i}: {est.best_params_}")
+
+#%% ==================================================================================
+# Final model XGBoost + LASSO-Reg
+# ====================================================================================
+
+# Final search op volledige trainingsset
+xgb_lassoreg_grid.fit(X_train, y_train)
+
+# Beste parameters
+print("\nFinal best params for XGBoost + LASSO-Reg:")
+print(xgb_lassoreg_grid.best_params_)
+
+# Beste CV-score op de volledige trainingsset
+print(f"Final CV ROC-AUC on full training set: {xgb_lassoreg_grid.best_score_:.4f}")
+
+# Definitieve model
+final_xgb_lassoreg_model = xgb_lassoreg_grid.best_estimator_
+# %%
