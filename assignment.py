@@ -91,6 +91,7 @@ for k in k_values:
 best_k = k_values[int(np.argmax(k_scores))]
 print(f"\nBeste k op basis van CV ROC-AUC: {best_k}")
 
+<<<<<<< HEAD
 # Plot k-analyse
 plt.figure(figsize=(8, 5))
 plt.plot(k_values, k_scores, marker='o')
@@ -131,10 +132,48 @@ svm_rbf_grid = GridSearchCV(
     param_grid=svm_rbf_param_grid,
     scoring='roc_auc',
     cv=inner_cv,
+=======
+#%%
+
+#%% ==================================================================================
+# SVM inclusief hyperparameters
+# ====================================================================================
+
+#%% Extra imports
+from sklearn.model_selection import GridSearchCV, StratifiedKFold
+from sklearn.pipeline import Pipeline
+from sklearn.metrics import classification_report, roc_auc_score, average_precision_score
+
+#%% Pipeline maken
+pipe = Pipeline([
+    ('scaler', StandardScaler()),
+    ('selector', SelectKBest(score_func=f_classif)),
+    ('svm', SVC(kernel='poly', gamma='scale', probability=True))
+])
+
+#%% Hyperparameter grid
+param_grid = {
+    'selector__k': [20, 50, 100, 150, 200, 300, 500, 1000],
+    'svm__degree': [1, 3, 5],
+    'svm__coef0': [0.01, 0.5, 1],
+    'svm__C': [0.01, 0.5, 1]
+}
+
+#%% Cross-validation instellen
+cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
+
+#%% Grid search
+grid = GridSearchCV(
+    estimator=pipe,
+    param_grid=param_grid,
+    scoring='roc_auc',
+    cv=cv,
+>>>>>>> 7c902b05d972c0319aacfd70519cd065c535a270
     n_jobs=-1,
     verbose=1
 )
 
+<<<<<<< HEAD
 # Nested CV uitvoeren
 svm_rbf_nested_scores = cross_validate(
     estimator=svm_rbf_grid,
@@ -501,3 +540,22 @@ print(f"Final CV ROC-AUC on full training set: {xgb_grid.best_score_:.4f}")
 
 # Definitieve model
 final_xgb_model = xgb_grid.best_estimator_
+=======
+grid.fit(X_train, y_train)
+
+#%% Beste instellingen
+print("Beste parameters:")
+print(grid.best_params_)
+print(f"Beste cross-val ROC-AUC: {grid.best_score_:.4f}")
+
+#%% Evaluatie op testset
+best_model = grid.best_estimator_
+
+y_pred = best_model.predict(X_test)
+y_prob = best_model.predict_proba(X_test)[:, 1]
+
+print("\nTestset resultaten:")
+print(classification_report(y_test, y_pred))
+print(f"Test ROC-AUC: {roc_auc_score(y_test, y_prob):.4f}")
+print(f"Test Average Precision: {average_precision_score(y_test, y_prob):.4f}")
+>>>>>>> 7c902b05d972c0319aacfd70519cd065c535a270
