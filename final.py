@@ -609,19 +609,7 @@ selected_pipelines = {
     'XGBoost + log-Reg': {
         'nested_scores': xgb_logreg_nested_scores['test_score'],
         'grid': xgb_logreg_grid
-    }#,
-    #'Linear SVM + PCA': {
-    #   'nested_scores': linear_svm_pca_nested_scores['test_score'],
-    #    'grid': linear_svm_pca_grid
-   # },
-    #'Linear SVM + log-Reg': {
-    #    'nested_scores': svm_linear_logreg_nested_scores['test_score'],
-    #    'grid': svm_linear_logreg_grid
-    #}#,
-    #'Logistic Regression + PCA': {
-    #    'nested_scores': logreg_pca_nested_scores['test_score'],
-    #    'grid': logreg_pca_grid
-    #}
+    }
 }
 
 #%% ----------------------------------------------------------------------------------
@@ -722,10 +710,6 @@ plt.show()
 
 from sklearn.model_selection import learning_curve
 
-# Gebruik de beste pipeline zoals gekozen op basis van nested CV
-# best_final_model is al gedefinieerd als:
-# best_final_model = best_pipeline_grid.best_estimator_
-
 learning_curve_cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
 
 train_sizes, train_scores, val_scores = learning_curve(
@@ -774,7 +758,7 @@ plt.grid(True, alpha=0.3)
 plt.tight_layout()
 plt.show()
 
-# Optioneel: tabelletje met de exacte waarden printen
+
 learning_curve_table = pd.DataFrame({
     'Train size': train_sizes,
     'Train mean PR-AUC': train_mean,
@@ -843,7 +827,7 @@ print(f"Std nested PR-AUC:  {comparison_df.loc[0, 'Std PR-AUC']:.4f}")
 #%% ----------------------------------------------------------------------------------
 # 7. Beste pipeline opnieuw fitten op de volledige trainingsset, FINAL MODEL!!
 # -----------------------------------------------------------------------------------
-#dit hele stuk is aangepast om goede drempel te vinden op train
+
 best_pipeline_grid.fit(X_train, y_train)
 
 best_final_model = best_pipeline_grid.best_estimator_
@@ -856,19 +840,16 @@ print("Beste hyperparameters op volledige trainingsset:")
 print(best_pipeline_grid.best_params_)
 print(f"Beste CV PR-AUC op volledige trainingsset: {best_pipeline_grid.best_score_:.4f}")
 
-# --- NIEUW: DREMPEL (THRESHOLD) BEREKENEN OP DE TRAININGS DATA ---
+
 from sklearn.metrics import precision_recall_curve
 
-# Bereken de voorspelde kansen op de TRAIN set
+
 y_train_proba = best_final_model.predict_proba(X_train)[:, 1]
 
-# Bereken precision, recall en thresholds op de TRAIN set
 precisions, recalls, thresholds = precision_recall_curve(y_train, y_train_proba)
 
-# Bereken de F1-score voor elke drempelwaarde (voorkom delen door nul met 1e-10)
 f1_scores = 2 * (precisions[:-1] * recalls[:-1]) / (precisions[:-1] + recalls[:-1] + 1e-10)
 
-# Zoek de drempel met de allerhoogste F1-score
 best_idx = np.argmax(f1_scores)
 optimale_drempel = thresholds[best_idx]
 
@@ -876,10 +857,8 @@ print(f"\nDe optimaal berekende drempel op de trainingsdata is: {optimale_drempe
 #%% ----------------------------------------------------------------------------------
 # 8. Evaluatie op de unseen 20% testset
 # -----------------------------------------------------------------------------------
-#ook dit aangepast op section 7 
-y_test_proba = best_final_model.predict_proba(X_test)[:, 1]
 
-# Toepassen van de eerlijk berekende drempel op de test data!
+y_test_proba = best_final_model.predict_proba(X_test)[:, 1]
 y_test_pred = (y_test_proba >= optimale_drempel).astype(int)
 
 test_roc_auc = roc_auc_score(y_test, y_test_proba)
@@ -923,7 +902,6 @@ plt.show()
 # -----------------------------------------------------------------------------------
 from sklearn.metrics import precision_recall_curve, average_precision_score
 
-# Bereken de precision, recall en PR-AUC op de testset
 precision, recall, _ = precision_recall_curve(y_test, y_test_proba)
 pr_auc = average_precision_score(y_test, y_test_proba)
 
@@ -935,7 +913,6 @@ plt.plot(
     label=f'{best_pipeline_name} (PR-AUC = {pr_auc:.3f})'
 )
 
-# De 'Random classifier' baseline voor een PR-curve is het percentage eentjes in je data
 no_skill = len(y_test[y_test == 1]) / len(y_test)
 plt.plot([0, 1], [no_skill, no_skill], linestyle='--', linewidth=1, label=f'Random classifier (Baseline = {no_skill:.3f})')
 
