@@ -26,7 +26,7 @@ from sklearn.model_selection import cross_validate
 
 def load_data():
     this_directory = os.path.dirname(os.path.abspath(__file__))
-    data = pd.read_csv(os.path.join(this_directory,'ecg' ,'ecg_data', 'ecg_data.csv'), index_col=0)
+    data = pd.read_csv(os.path.join(this_directory,'ecg' ,'ecg_data', 'ecg_data.csv'), index_col=0) # Standaard is None. Nu op 0. Dit betekent dat de eerste kolom als index wordt gebruikt.
     return data
 
 data = load_data()
@@ -35,10 +35,10 @@ data = load_data()
 
 print(f'The number of samples: {len(data.index)}')
 print(f'The number of columns: {len(data.columns)}')
-print(data.head())
+print(data.head()) # Eerste paar regels laten zien
 
 print("\nMissing values per column:")
-print(data.isnull().sum())
+print(data.isnull().sum()) 
 
 print("\nTotal missing values:")
 print(data.isnull().sum().sum())
@@ -46,29 +46,32 @@ print(data.isnull().sum().sum())
 print("\nColumn names:")
 print(data.columns)
 
-X = data.iloc[:, :-1]
-y = data.iloc[:, -1]
+X = data.iloc[:, :-1] # alle rijen en alle kollommen behalve de laatste
+y = data.iloc[:, -1] # alle rijen en alleen de laatste kolom
 
 print("\nUnieke klassen:")
 print(y.unique())
 
-print(y.value_counts())
+print(y.value_counts()) # geeft aan hoe de data is verdeeld. hoe vaak elke unieke waarde voorkomt. 
 
 #%% Data opsplitsen in train en test
 
 X_train, X_test, y_train, y_test = train_test_split(
     X, y,
     test_size=0.2,
-    random_state=42,
+    random_state=42, # Een random state invullen. Maakt niet uit wat dit is. 42 is een grapje. "Antwoord op alles is 42".
     stratify=y  # Zorgt ervoor dat verdeling 0 en 1 gelijk blijft, want we hadden niet goed verdeelde data 
 )
 
 #%% Algemene dingetjes
 
 # Voor class imbalance
-n_negative = (y_train == 0).sum()
-n_positive = (y_train == 1).sum()
-imbalance_ratio = n_negative / n_positive
+n_negative = (y_train == 0).sum() # y train optellen met 0 
+n_positive = (y_train == 1).sum() # y train optellen met 1
+imbalance_ratio = n_negative / n_positive # Dit hebben we later nodig voor XGBoost. 
+
+# Elke keer dat je de ene klasse, die minder vaak voorkomt, fout rekent, rekent dat bijvoorbeeld 10x zwaarder 
+# mee dan wanneer je de klasse fout classificeerd die vaker voorkomt. Zo compenseer je voor class imbalance.
 
 
 #%% ==================================================================================
@@ -77,40 +80,60 @@ imbalance_ratio = n_negative / n_positive
 
 logreg_pca_pipe = Pipeline([
     ('scaler', StandardScaler()), 
-    ('pca', PCA(n_components=0.8, svd_solver='auto', whiten=True)),
+    ('pca', PCA(n_components=0.8, svd_solver='auto', whiten=True)), 
+    # PCA = Data in grafiek. Ze kijken waar het middelpunt ligt. Dat maken ze nieuwe 0.0 punt. Dan maken ze lijn in welke richting de data loopt. Dat is PC1. Dan zetten ze een lijn daarop 
+    # loodrecht. Dat is PC2. En dan pakken ze ook nog PC3 en dat is ruis. Je maakt nieuwe features van hoog dimensionaal naar laag dimensionaal zonder informatie kwijt te raken.
+    # n_components=0.8 --> hou genoeg componenten zodat 80% van de variatie behouden blijft. 
+    # svd_solver='auto' --> SVD = singular value decomposition. SVD is de rekenmethode die PCA gebruikt om de belangrijkste richtingen (principal components) in je data te vinden.
+    # whiten=True --> Whitening maakt alle PCA-componenten even groot qua spreiding, zodat geen enkele component domineert — maar je verliest wel info over welke richting het belangrijkst was. 
+    # Dit maakt data verwerking ook sneller. 
     ('clf', LogisticRegression(class_weight='balanced', max_iter=3000, random_state=42)) 
+    # Logistic regression =
+    # class_weight='balanced' --> Fout in minderheidsklasse wordt zwaarder gewogen.
+    # max_iter=3000 --> Hoe vaak je de weights mag optimaliseren.
+    # random_state= 42 --> Waar je initailiseert. Een random state invullen. Maakt niet uit wat dit is. 42 is een grapje. "Antwoord op alles is 42". 
 ])
 
 logreg_pca_param_grid = {
     'clf__C': [0.01, 0.1, 1, 10, 100],
+    # Regularisatie sterkte. Hoe lager de C, hoe meer lineair het model, want minder last van grote gewichten die het model heel erg gaan sturen. Specifieke features mogen niet meer zeggen 
+    # over de data. Dat wordt sterker afgestraft. Dit is dus een simpeler model. Minder kans op overfitting. 
     'clf__penalty': ['l2']
+    # l2 is naar 0 en l1 is op 0. Niet perse uithalen, want dat hebben we al gedaan.
 }
 
 inner_cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
 outer_cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
 
+# Inner loop bepaald welke hyperparameters. Outer loop is performance meten.
+# n_splits=5 --> 20% validatie en 80% training.
+# shuffle=True --> Data shuffelen voordat het gesplit wordt. Bijvoorbeeld eerst zieke dan gezonde mensen. Dat zit dan hierdoor door elkaar.x
+
+# inner loop 
 logreg_pca_grid = GridSearchCV(
     estimator=logreg_pca_pipe,
     param_grid=logreg_pca_param_grid,
-    scoring='average_precision',
+    scoring='average_precision', # uses precision recall AUC. Onze dataset is imbalanced. Daarom belangrijk. PR AUC focust op de minority class. ROC AUC kijkt naar het algemene ding. 
     cv=inner_cv,
-    n_jobs=-1,
-    verbose=1
+    n_jobs=-1, # bepaald waar je cpu zich op richt, 1 = op 1 cpu werken, minder werk en lagere werkkracht, -1 = alle mannen aan boord we gaan dit samen cheffen.  
+    verbose=1 # prints progress updates while running so you can see it is working :)
 )
 
+
+# outer loop
 logreg_pca_nested_scores = cross_validate(
-    estimator=logreg_pca_grid,
+    estimator=logreg_pca_grid, # the grid search itself is what gets evaluated
     X=X_train,
     y=y_train,
     cv=outer_cv,
     scoring='average_precision',
-    n_jobs=1,
-    return_estimator=True,
-    return_train_score=False
+    n_jobs=1, # omdat andere al -1 gebruikt, dan gaat je computer naar de tyfus
+    return_estimator=True, # opgeslagen welke waardes die heeft ingezet en dan makkelijk later inspecteren.
+    return_train_score=False # trainingsscores niet returnen. 
 )
 
 print("Outer fold PR-AUC scores (LogReg + PCA):")
-print(logreg_pca_nested_scores['test_score'])
+print(logreg_pca_nested_scores['test_score']) 
 print(f"\nMean nested PR-AUC: {np.mean(logreg_pca_nested_scores['test_score']):.4f}")
 print(f"Std nested PR-AUC: {np.std(logreg_pca_nested_scores['test_score']):.4f}")
 
@@ -122,11 +145,24 @@ svm_rbf_pca_pipe = Pipeline([
     ('scaler', StandardScaler()),
     ('pca', PCA(n_components=0.8, svd_solver='auto', whiten=True)),
     ('clf', SVC(kernel='rbf', probability=True))
+    # SVC = Support Vector Classifier.
+    # Probeert een scheidingslijn (of vlak) te vinden tussen klassen, waarbij de afstand tot de dichtstbijzijnde punten (support vectors) maximaal is.
+    # kernel='rbf' -->  RBF = radial basis function. Dit zorgt ervoor dat je geen rechte lijn meer trekt, maar een gebogen grens. Handig als je data niet lineair te scheiden is (wat vaak zo 
+    # is in echte data). Je projecteert de data eigenlijk naar een hogere dimensie zodat het daar wel lineair scheidbaar wordt.
+    # probability=True -->  Zorgt ervoor dat je niet alleen een klasse krijgt, maar ook een kans (bijv. 0.8 kans op klasse 1). Dit kost wel extra rekentijd, want er wordt een extra stap 
+    # gedaan (Platt scaling). Belangrijk voor AUC.
 ])
 
 svm_rbf_pca_param_grid = {
     'clf__C': [1e-2, 1e-1, 1],
+    # lage C = minder overfitting, simpeler model
+    # hoge C = meer kans op overfitting, maar betere fit op training data
     'clf__gamma': [1e-4, 1e-3, 1e-2]
+    # Bepaalt hoe "ver" een datapunt invloed heeft. Hoever ruimte die om zich heen beïnvloedt. 
+    # Lage gamma = elk punt kijkt ver om zich heen → smooth, globale beslisgrens
+    # Hoge gamma = elk punt kijkt alleen heel lokaal → grillige, complexe grens
+
+    # Kleinere C en kleinere gamma, want we hebben al eerdere genormaliseerd en gefit bij PCA. Dus extra zal alleen maar overfitting opleveren.
 }
 
 svm_rbf_pca_grid = GridSearchCV(
@@ -165,11 +201,25 @@ knn_pca_pipe = Pipeline([
     ('scaler', StandardScaler()),
     ('pca', PCA(n_components=0.8, svd_solver='auto', whiten=True)),
     ('clf', KNeighborsClassifier())
+    # KNeighborsClassifier = Kijkt naar de k dichtstbijzijnde punten (neighbors) in de dataset en bepaalt op basis daarvan de klasse.
+    # Dus: "bij welke groep lijken mijn buren te horen?"
 ])
 
 knn_pca_param_grid = {
     'clf__n_neighbors': [3, 5, 9, 15, 20],
+    # clf__n_neighbors --> Hoeveel buren je meeneemt in de beslissing.
+    # Lage k (bijv. 3) --> heel gevoelig voor ruis → kan overfitten
+    # Hoge k (bijv. 20) --> kijkt meer globaal → stabieler maar kan belangrijke details missen
     'clf__weights': ['uniform', 'distance']
+    # clf__weights --> Hoe de buren meetellen:
+
+    # 'uniform' --> 
+    # Alle buren tellen even zwaar mee
+    # Dus: gewoon meerderheid wint
+
+    # 'distance' --> 
+    # Dichtere buren tellen zwaarder mee dan verder weg
+    # Dus: punten dichtbij hebben meer invloed (vaak logischer)
 }
 
 knn_pca_grid = GridSearchCV(
@@ -209,14 +259,26 @@ rf_pca_pipe = Pipeline([
     ('scaler', StandardScaler()),
     ('pca', PCA(n_components=0.8, svd_solver='auto', whiten=True)),
     ('clf', RandomForestClassifier(random_state=42, class_weight='balanced_subsample'))
+    # RandomForestClassifier = Bestaat uit heel veel decision trees. Elke tree maakt een voorspelling en samen stemmen ze → majority vote.
+    # Hierdoor minder gevoelig voor overfitting dan één enkele decision tree.
+    # class_weight='balanced_subsample' --> Zorgt dat elke tree rekening houdt met class imbalance. Minderheidsklasse krijgt meer gewicht (maar per bootstrap sample bepaald).
 ])
 
 rf_pca_param_grid = {
     'clf__n_estimators': [100, 200],
+    # clf__n_estimators --> Aantal bomen in het bos. Meer bomen → stabielere voorspelling (maar kost meer tijd). Vaak: meer = beter, tot een bepaald punt.
     'clf__max_depth': [3, 5, 10], 
+    # clf__max_depth --> Hoe diep elke boom mag groeien.
+    # Lage depth → simpele bomen → minder overfitting
+    # Hoge depth → complexe bomen → meer kans op overfitting
     'clf__max_features': ['sqrt'],
+    # clf__max_features --> Hoeveel features elke split mag bekijken. 'sqrt' = √(aantal features). Zorgt voor variatie tussen bomen → minder overfitting. 
     'clf__min_samples_split': [2, 5],
+    # clf__min_samples_split --> Minimum aantal samples nodig om een split te maken.
+    # Hoger → minder snel splitsen → simpelere bomen
     'clf__min_samples_leaf': [2, 4]
+    # clf__min_samples_leaf --> Minimum aantal samples in een leaf (eindpunt van boom).
+    # Hoger → voorkomt dat bladeren gebaseerd zijn op weinig data → minder overfitting
 }
 
 rf_pca_grid = GridSearchCV(
@@ -261,13 +323,32 @@ xgb_pca_pipe = Pipeline([
         scale_pos_weight=imbalance_ratio,
         random_state=42
     ))
+    # XGBClassifier = Boosting model (anders dan Random Forest). Bomen worden NIET onafhankelijk gemaakt, maar na elkaar. Elke nieuwe boom probeert de fouten van de vorige bomen te corrigeren.
+    
+    # objective='binary:logistic' --> Voor binaire classificatie (output = kans tussen 0 en 1)
+
+    # eval_metric='auc' --> Model wordt geëvalueerd op ROC-AUC
+
+    # scale_pos_weight=imbalance_ratio --> Minderheidsklasse krijgt meer gewicht (belangrijk bij scheve data)
 ])
+
 xgb_pca_param_grid = {
     'clf__n_estimators': [100],
+    # clf__n_estimators --> Aantal bomen (boosting stappen)
+    # Meer bomen → beter leren, maar ook kans op overfitting
     'clf__max_depth': [2, 3],          # lager!
+    # clf__max_depth --> Hoe diep elke boom mag zijn
+    # Hier bewust laag (2–3) → simpele bomen → minder overfitting
+    # Boosting werkt vaak beter met veel simpele bomen
     'clf__learning_rate': [0.05],
+    # clf__learning_rate --> Hoeveel elke boom bijdraagt
+    # Lage learning rate → langzamer leren → vaak beter resultaat (maar dan heb je meestal meer bomen nodig)
     'clf__subsample': [0.6, 0.8],      # meer regularisatie
+    # clf__subsample --> Percentage van data dat elke boom gebruikt
+    # < 1 → random subset → minder overfitting
     'clf__colsample_bytree': [0.6, 0.8]
+    # clf__colsample_bytree --> Percentage features per boom
+    # Zorgt voor extra randomisatie → betere generalisatie
 }
 
 
@@ -347,6 +428,22 @@ svm_rbf_logreg_pipe = Pipeline([
     ('selector', SelectFromModel(
         LogisticRegression(penalty='l1', solver='liblinear', class_weight='balanced', C=0.1, random_state=42, max_iter=3000)
     )),
+    # # SelectFromModel = Gebruikt een model om te bepalen welke features belangrijk zijn, en gooit de minder belangrijke features weg. 
+    # Hier gebruik je Logistic Regression als "feature selector".
+
+    # penalty='l1' --> L1 regularisatie zet sommige gewichten EXACT op 0.
+    # → features met gewicht 0 worden verwijderd
+    # → automatische feature selectie
+
+    # solver='liblinear' --> Nodig om L1 te kunnen gebruiken (niet elke solver kan dat)
+
+    # class_weight='balanced' --> Houdt rekening met class imbalance bij het bepalen van belangrijke features
+
+    # C=0.1 --> Lage C = sterke regularisatie
+    # → meer gewichten gaan naar 0
+    # → dus: strengere feature selectie
+
+    # max_iter=3000 --> Genoeg iteraties om te convergeren
     ('clf', SVC(kernel='rbf', probability=True))
 ])
 
@@ -612,6 +709,10 @@ selected_pipelines = {
     }
 }
 
+# selected_pipelines = Dictionary waarin we per pipeline opslaan:
+# 1. de nested CV test scores van de outer folds
+# 2. de bijbehorende GridSearchCV, zodat we later de beste pipeline opnieuw kunnen fitten
+
 #%% ----------------------------------------------------------------------------------
 # 2. Tabel maken met alle nested CV PR-AUC scores per outer fold
 # -----------------------------------------------------------------------------------
@@ -627,6 +728,13 @@ print("\n" + "="*100)
 print("TABEL MET NESTED CV PR-AUC SCORES PER OUTER FOLD")
 print("="*100)
 print(nested_scores_table)
+
+# Hier maken we een overzichtstabel:
+# rijen = outer folds
+# kolommen = pipelines
+# waarden = PR-AUC score op die specifieke outer test fold
+
+# Zo kun je pipeline-prestaties direct per fold vergelijken.
 
 #%% ----------------------------------------------------------------------------------
 # 3. Samenvattingstabel maken met mean/std/min/max per pipeline
@@ -661,6 +769,16 @@ print("\n" + "="*100)
 print("TABEL MET SAMENVATTING VAN DE NESTED CV RESULTATEN (PR-AUC)")
 print("="*100)
 print(comparison_df)
+
+# Hier vatten we per pipeline de prestaties samen.
+# Mean PR-AUC = gemiddelde prestatie over alle outer folds
+# Std PR-AUC = hoeveel de prestaties variëren tussen folds
+# Min/Max = slechtste en beste foldscore
+
+# Daarna sorteren we:
+# eerst op hoogste mean PR-AUC
+# en bij gelijke mean op laagste std
+# --> dus: liefst goed én stabiel
 
 #%% Beste pipeline expliciet tonen
 best_pipeline_name = comparison_df.loc[0, 'Pipeline']
@@ -703,6 +821,9 @@ plt.legend(bbox_to_anchor=(1.02, 1), loc='upper left')
 plt.grid(True, alpha=0.3)
 plt.tight_layout()
 plt.show()
+
+# Deze plot laat per pipeline zien hoe de PR-AUC verandert over de outer folds.
+# Hiermee zie je niet alleen het gemiddelde, maar ook of een model heel wisselend presteert tussen verschillende train/test splits.
 
 #%% ----------------------------------------------------------------------------------
 # Learning curve van de beste pipeline (alleen op trainingsdata)
